@@ -206,7 +206,7 @@
     }
 
     .results {
-      width: 250px;
+      width: min(320px, 38vw);
       flex: 0 0 auto;
       background: var(--paper);
       border: 1px solid var(--line);
@@ -215,6 +215,9 @@
       padding: 14px 14px 10px;
       overflow: auto;
       min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
     }
 
     .results h2 {
@@ -222,6 +225,44 @@
       font-size: 0.95rem;
       font-family: Georgia, "Iowan Old Style", Palatino, serif;
       font-weight: 650;
+    }
+
+    .results-block {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .params-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 6px 0 8px;
+    }
+
+    .params-actions button {
+      padding: 5px 10px;
+      font-size: 0.82rem;
+    }
+
+    #params {
+      flex: 1 1 auto;
+      min-height: 140px;
+      width: 100%;
+      resize: vertical;
+      font: 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      color: var(--ink);
+      background: #fff;
+      border: 1px solid #ddcfbe;
+      border-radius: 10px;
+      padding: 8px 10px;
+      white-space: pre;
+      tab-size: 2;
+    }
+
+    #params:focus-visible {
+      outline: 2px solid var(--tension);
+      outline-offset: 2px;
     }
 
     .legend {
@@ -273,9 +314,10 @@
 
     @media (max-width: 800px) {
       .workspace { flex-direction: column; }
-      .results { width: auto; max-height: 32vh; }
+      .results { width: auto; max-height: 48vh; }
       .stage { min-height: 260px; }
       #clear { margin-left: 0; }
+      #params { min-height: 120px; }
     }
 
     @media (max-width: 520px) {
@@ -344,15 +386,25 @@
       <p id="empty" class="empty">Place joints on the grid, connect sticks into the two supports, then set the load.</p>
       <div id="tooltip" class="tooltip" hidden></div>
     </div>
-    <aside class="results" aria-label="Member forces">
-      <h2>Member forces</h2>
-      <p class="legend">
-        <span><i class="swatch tension"></i> Tension</span>
-        <span><i class="swatch compression"></i> Compression</span>
-        <span><i class="swatch tan"></i> Unloaded</span>
-      </p>
-      <p id="force-blurb"></p>
-      <div id="force-list"></div>
+    <aside class="results" aria-label="Analysis and bridge parameters">
+      <div class="results-block">
+        <h2>Member forces</h2>
+        <p class="legend">
+          <span><i class="swatch tension"></i> Tension</span>
+          <span><i class="swatch compression"></i> Compression</span>
+          <span><i class="swatch tan"></i> Unloaded</span>
+        </p>
+        <p id="force-blurb"></p>
+        <div id="force-list"></div>
+      </div>
+      <div class="results-block" style="flex: 1 1 auto;">
+        <h2>Bridge parameters</h2>
+        <div class="params-actions">
+          <button type="button" id="apply-params">Apply</button>
+          <button type="button" id="copy-params">Copy</button>
+        </div>
+        <textarea id="params" spellcheck="false" aria-label="Bridge parameters as editable text"></textarea>
+      </div>
     </aside>
   </div>
 
@@ -362,6 +414,8 @@
     const MIN_WIDTH = 3;
     const MAX_WIDTH = 16;
     const NEAR_ZERO = 1e-3;
+    const STORAGE_KEY = "truss-lab:v1";
+    const DISPLACEMENT_LIMIT = 1e9;
 
     const canvas = document.getElementById("canvas");
     const ctx = canvas.getContext("2d");
@@ -371,11 +425,14 @@
     const errorEl = document.getElementById("form-error");
     const blurbEl = document.getElementById("force-blurb");
     const listEl = document.getElementById("force-list");
+    const paramsEl = document.getElementById("params");
     const bridgeInput = document.getElementById("bridge-length");
     const spanInput = document.getElementById("span-length");
     const gridInput = document.getElementById("grid-size");
     const stickInput = document.getElementById("stick-length");
     const modeButtons = [...document.querySelectorAll("[data-mode]")];
+    let paramsFocused = false;
+    let persistTimer = 0;
 
     const color = {
       tension: cssVar("--tension", "#148f45"),
@@ -402,7 +459,7 @@
     let dragId = null;
     let dragMoved = false;
     let note = "";
-    let result = { unstable: true, forces: null };
+    let result = { unstable: true, forces: null, reason: "", diagnostics: null };
     let view = null;
     let inputTimer = 0;
 
@@ -523,12 +580,93 @@
       );
     }
 
+    function diagnoseModel(modelNodes, modelMembers) {
+      const freeNodes = modelNodes.filter((node) => !node.role);
+      const pin = modelNodes.find((node) => node.role === "pin");
+      const roller = modelNodes.find((node) => node.role === "roller");
+      const degree = new Map(modelNodes.map((node) => [node.id, 0]));
+      for (const member of modelMembers) {
+        degree.set(member.i, (degree.get(member.i) || 0) + 1);
+        degree.set(member.j, (degree.get(member.j) || 0) + 1);
+      }
+      const isolated = modelNodes
+        .filter((node) => (degree.get(node.id) || 0) === 0 && !node.role)
+        .map((node) => node.label);
+      const adj = new Map(modelNodes.map((node) => [node.id, []]));
+      for (const member of modelMembers) {
+        adj.get(member.i).push(member.j);
+        adj.get(member.j).push(member.i);
+      }
+      const reachable = new Set();
+      const stack = [];
+      if (pin) stack.push(pin.id);
+      if (roller) stack.push(roller.id);
+      while (stack.length) {
+        const id = stack.pop();
+        if (reachable.has(id)) continue;
+        reachable.add(id);
+        for (const next of adj.get(id) || []) stack.push(next);
+      }
+      const disconnected = modelNodes
+        .filter((node) => !reachable.has(node.id))
+        .map((node) => node.label);
+      const joints = modelNodes.length;
+      const sticks = modelMembers.length;
+      // Plane truss: statically determinate when m = 2j - 3 with typical supports.
+      const determinacy = sticks - (2 * joints - 3);
+      return {
+        joints,
+        freeJoints: freeNodes.length,
+        sticks,
+        determinacy,
+        isolated,
+        disconnected,
+        pin: pin ? { label: pin.label, x: pin.x, y: pin.y } : null,
+        roller: roller ? { label: roller.label, x: roller.x, y: roller.y } : null,
+      };
+    }
+
     // Direct stiffness, 2D truss, EA = 1. y is upward.
     // Positive axial force is tension: N = (EA/L) * elongation,
     // where elongation projects (u_j - u_i) along the member from i to j.
+    // Orphan free joints (no sticks) are ignored so stray points do not
+    // make an otherwise sound truss look singular.
     function analyzeModel(modelNodes, modelMembers, modelLoadId) {
-      const count = modelNodes.length;
-      const index = new Map(modelNodes.map((node, i) => [node.id, i]));
+      const diagnostics = diagnoseModel(modelNodes, modelMembers);
+      const activeIds = new Set();
+      for (const node of modelNodes) {
+        if (node.role) activeIds.add(node.id);
+      }
+      for (const member of modelMembers) {
+        activeIds.add(member.i);
+        activeIds.add(member.j);
+      }
+      const activeNodes = modelNodes.filter((node) => activeIds.has(node.id));
+      const activeDiagnostics = diagnoseModel(activeNodes, modelMembers);
+      diagnostics.activeJoints = activeNodes.length;
+      diagnostics.activeFreeJoints = activeNodes.filter((node) => !node.role).length;
+      diagnostics.activeDeterminacy = activeDiagnostics.determinacy;
+      diagnostics.activeDisconnected = activeDiagnostics.disconnected;
+
+      if (modelMembers.length === 0) {
+        return {
+          unstable: true,
+          forces: null,
+          reason: "No sticks yet.",
+          diagnostics,
+        };
+      }
+      if (activeDiagnostics.disconnected.length) {
+        return {
+          unstable: true,
+          forces: null,
+          reason: `Sticks do not tie these joints into the supports: ${activeDiagnostics.disconnected.join(", ")}.`,
+          diagnostics,
+        };
+      }
+
+      const count = activeNodes.length;
+      const index = new Map(activeNodes.map((node, i) => [node.id, i]));
       const ndof = count * 2;
       const K = Array.from({ length: ndof }, () => Array(ndof).fill(0));
 
@@ -536,8 +674,8 @@
         const ia = index.get(member.i);
         const ib = index.get(member.j);
         if (ia == null || ib == null) continue;
-        const a = modelNodes[ia];
-        const b = modelNodes[ib];
+        const a = activeNodes[ia];
+        const b = activeNodes[ib];
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const length = Math.hypot(dx, dy);
@@ -561,7 +699,7 @@
       }
 
       const fixed = Array(ndof).fill(false);
-      modelNodes.forEach((node, i) => {
+      activeNodes.forEach((node, i) => {
         if (node.role === "pin") {
           fixed[i * 2] = true;
           fixed[i * 2 + 1] = true;
@@ -572,30 +710,48 @@
 
       const free = [];
       for (let i = 0; i < ndof; i++) if (!fixed[i]) free.push(i);
+      diagnostics.freeDofs = free.length;
+      diagnostics.fixedDofs = fixed.filter(Boolean).length;
 
       const F = Array(ndof).fill(0);
       if (modelLoadId != null) {
         const li = index.get(modelLoadId);
         if (li != null) F[li * 2 + 1] = -1;
+        else if (!activeIds.has(modelLoadId)) {
+          diagnostics.loadIgnored = true;
+        }
       }
 
       const reducedK = free.map((row) => free.map((col) => K[row][col]));
       const reducedF = free.map((dof) => F[dof]);
       const solved = solveSystem(reducedK, reducedF);
-      if (!solved) return { unstable: true, forces: null };
+      if (!solved) {
+        let reason = "Stiffness matrix is singular (mechanism or missing triangulation).";
+        if (activeDiagnostics.determinacy < 0) {
+          reason += ` Short ${-activeDiagnostics.determinacy} stick(s) for a simple plane truss (m = 2j − 3 on active joints).`;
+        }
+        return { unstable: true, forces: null, reason, diagnostics };
+      }
 
       const u = Array(ndof).fill(0);
       free.forEach((dof, i) => { u[dof] = solved[i]; });
-      if (u.some((value) => !Number.isFinite(value) || Math.abs(value) > 1e6)) {
-        return { unstable: true, forces: null };
+      const maxU = u.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
+      diagnostics.maxDisplacement = maxU;
+      if (u.some((value) => !Number.isFinite(value) || Math.abs(value) > DISPLACEMENT_LIMIT)) {
+        return {
+          unstable: true,
+          forces: null,
+          reason: "Computed displacements blew up; the bridge is effectively unstable.",
+          diagnostics,
+        };
       }
 
       const forces = new Map();
       for (const member of modelMembers) {
         const ia = index.get(member.i);
         const ib = index.get(member.j);
-        const a = modelNodes[ia];
-        const b = modelNodes[ib];
+        const a = activeNodes[ia];
+        const b = activeNodes[ib];
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const length = Math.hypot(dx, dy);
@@ -607,10 +763,17 @@
         const s = dy / length;
         const elongation = c * (u[ib * 2] - u[ia * 2]) + s * (u[ib * 2 + 1] - u[ia * 2 + 1]);
         const axial = elongation / length;
-        if (!Number.isFinite(axial)) return { unstable: true, forces: null };
+        if (!Number.isFinite(axial)) {
+          return {
+            unstable: true,
+            forces: null,
+            reason: "Non-finite member force; the bridge is effectively unstable.",
+            diagnostics,
+          };
+        }
         forces.set(member.id, axial);
       }
-      return { unstable: false, forces };
+      return { unstable: false, forces, reason: "", diagnostics };
     }
 
     function solveSystem(matrix, vector) {
@@ -689,7 +852,7 @@
       if (isEmpty()) {
         return `Pin at the left end of the span, roller at the right. Grid ${formatInches(gridSize)}, sticks up to ${formatInches(maxStickLength)}.`;
       }
-      if (result.unstable) return UNSTABLE_MSG;
+      if (result.unstable) return result.reason || UNSTABLE_MSG;
       if (loadId == null) return NO_LOAD_MSG;
       return "Solved. Hover a stick to read its force. Positive is tension.";
     }
@@ -707,7 +870,7 @@
         return;
       }
       if (result.unstable) {
-        blurbEl.textContent = "Not available while the bridge is unstable.";
+        blurbEl.textContent = result.reason || "Not available while the bridge is unstable.";
         return;
       }
       if (loadId == null) {
@@ -736,11 +899,224 @@
       }
     }
 
+    function roundNum(value) {
+      if (!Number.isFinite(value)) return value;
+      return Math.round(value * 1e9) / 1e9;
+    }
+
+    function buildSnapshot() {
+      const loadNode = loadId != null ? nodeById(loadId) : null;
+      const jointRows = [...nodes]
+        .sort((a, b) => a.label.localeCompare(b.label))
+        .map((node) => ({
+          label: node.label,
+          x: roundNum(node.x),
+          y: roundNum(node.y),
+          role: node.role || null,
+          id: node.id,
+        }));
+      const stickRows = [...members]
+        .sort((a, b) => memberName(a).localeCompare(memberName(b)))
+        .map((member) => {
+          const a = nodeById(member.i);
+          const b = nodeById(member.j);
+          const force = result.forces ? result.forces.get(member.id) : null;
+          return {
+            name: memberName(member),
+            from: a ? a.label : member.i,
+            to: b ? b.label : member.j,
+            length: a && b ? roundNum(memberLength(a, b)) : null,
+            force: force == null ? null : roundNum(force),
+            id: member.id,
+            i: member.i,
+            j: member.j,
+          };
+        });
+      return {
+        version: 1,
+        bridgeLength: roundNum(bridgeLength),
+        spanLength: roundNum(spanLength),
+        gridSize: roundNum(gridSize),
+        maxStickLength: roundNum(maxStickLength),
+        load: loadNode ? loadNode.label : null,
+        loadId,
+        unstable: result.unstable,
+        reason: result.reason || "",
+        status: note || modelStatus(),
+        diagnostics: result.diagnostics,
+        joints: jointRows,
+        sticks: stickRows,
+        nextId,
+        nextLetter,
+      };
+    }
+
+    function formatParams(snapshot) {
+      return JSON.stringify(snapshot, null, 2);
+    }
+
+    function renderParams() {
+      if (paramsFocused) return;
+      paramsEl.value = formatParams(buildSnapshot());
+    }
+
+    function persistDesign() {
+      try {
+        localStorage.setItem(STORAGE_KEY, formatParams(buildSnapshot()));
+      } catch (_) {
+        /* private mode / quota */
+      }
+    }
+
+    function schedulePersist() {
+      clearTimeout(persistTimer);
+      persistTimer = setTimeout(persistDesign, 50);
+    }
+
+    function syncDimensionInputs() {
+      bridgeInput.value = String(bridgeLength);
+      spanInput.value = String(spanLength);
+      gridInput.value = String(gridSize);
+      stickInput.value = String(maxStickLength);
+    }
+
+    function applySnapshot(snapshot) {
+      if (!snapshot || typeof snapshot !== "object") {
+        throw new Error("Parameters must be a JSON object.");
+      }
+      const bridge = Number(snapshot.bridgeLength);
+      const span = Number(snapshot.spanLength);
+      const grid = Number(snapshot.gridSize);
+      const stick = Number(snapshot.maxStickLength);
+      if (![bridge, span, grid, stick].every((value) => Number.isFinite(value) && value > 0)) {
+        throw new Error("bridgeLength, spanLength, gridSize, and maxStickLength must be positive numbers.");
+      }
+      if (span > bridge) throw new Error("Span is longer than the bridge length.");
+      if (stick < grid) throw new Error("Stick length must be at least one grid step.");
+      if (!Array.isArray(snapshot.joints) || !Array.isArray(snapshot.sticks)) {
+        throw new Error("joints and sticks arrays are required.");
+      }
+
+      const restoredNodes = snapshot.joints.map((joint, index) => {
+        if (!joint || typeof joint !== "object") throw new Error(`Invalid joint at index ${index}.`);
+        const x = Number(joint.x);
+        const y = Number(joint.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          throw new Error(`Joint ${joint.label || index} needs numeric x/y.`);
+        }
+        const node = {
+          id: Number.isFinite(Number(joint.id)) ? Number(joint.id) : index + 1,
+          x,
+          y,
+          label: String(joint.label || indexToLetters(index)),
+        };
+        if (joint.role === "pin" || joint.role === "roller") node.role = joint.role;
+        return node;
+      });
+      const pinCount = restoredNodes.filter((node) => node.role === "pin").length;
+      const rollerCount = restoredNodes.filter((node) => node.role === "roller").length;
+      if (pinCount !== 1 || rollerCount !== 1) {
+        throw new Error("Exactly one pin and one roller joint are required.");
+      }
+      const byLabel = new Map(restoredNodes.map((node) => [node.label, node]));
+      const byId = new Map(restoredNodes.map((node) => [node.id, node]));
+      const restoredMembers = snapshot.sticks.map((stickRow, index) => {
+        if (!stickRow || typeof stickRow !== "object") throw new Error(`Invalid stick at index ${index}.`);
+        let i = stickRow.i;
+        let j = stickRow.j;
+        if ((!Number.isFinite(Number(i)) || !Number.isFinite(Number(j))) && stickRow.from != null && stickRow.to != null) {
+          const a = byLabel.get(String(stickRow.from));
+          const b = byLabel.get(String(stickRow.to));
+          if (!a || !b) throw new Error(`Stick ${stickRow.name || index} refers to missing joints.`);
+          i = a.id;
+          j = b.id;
+        }
+        i = Number(i);
+        j = Number(j);
+        if (!byId.has(i) || !byId.has(j)) {
+          throw new Error(`Stick ${stickRow.name || index} refers to missing joint ids.`);
+        }
+        return {
+          id: Number.isFinite(Number(stickRow.id)) ? Number(stickRow.id) : 1000 + index,
+          i,
+          j,
+        };
+      });
+
+      let restoredLoadId = null;
+      if (snapshot.loadId != null && byId.has(Number(snapshot.loadId))) {
+        restoredLoadId = Number(snapshot.loadId);
+      } else if (snapshot.load != null && byLabel.has(String(snapshot.load))) {
+        restoredLoadId = byLabel.get(String(snapshot.load)).id;
+      }
+
+      bridgeLength = bridge;
+      spanLength = span;
+      gridSize = grid;
+      maxStickLength = stick;
+      nodes = restoredNodes;
+      members = restoredMembers;
+      loadId = restoredLoadId;
+      stickStart = null;
+      dragId = null;
+      dragMoved = false;
+      hoverId = null;
+      note = "";
+      nextId = Number.isFinite(Number(snapshot.nextId))
+        ? Number(snapshot.nextId)
+        : Math.max(0, ...nodes.map((node) => node.id), ...members.map((member) => member.id)) + 1;
+      nextLetter = Number.isFinite(Number(snapshot.nextLetter))
+        ? Number(snapshot.nextLetter)
+        : nodes.filter((node) => !node.role).length + 2;
+      positionSupports();
+      // Keep free joints from the snapshot; supports follow span settings.
+      for (const joint of snapshot.joints) {
+        if (joint.role) continue;
+        const node = byLabel.get(String(joint.label));
+        if (!node) continue;
+        node.x = Number(joint.x);
+        node.y = Number(joint.y);
+      }
+      syncDimensionInputs();
+      errorEl.hidden = true;
+      errorEl.textContent = "";
+      markDimensionValidity({});
+    }
+
+    function applyParamsText() {
+      try {
+        const snapshot = JSON.parse(paramsEl.value);
+        applySnapshot(snapshot);
+        paramsFocused = false;
+        refresh();
+        note = "Applied parameters from the text area.";
+        renderStatus();
+      } catch (error) {
+        note = error && error.message ? error.message : "Could not apply parameters.";
+        renderStatus();
+        statusEl.classList.add("warning");
+      }
+    }
+
+    function loadPersistedDesign() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return false;
+        const snapshot = JSON.parse(raw);
+        applySnapshot(snapshot);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
     function refresh() {
       solve();
       renderStatus();
       renderPanel();
+      renderParams();
       draw();
+      persistDesign();
     }
 
     function readDimensions() {
@@ -1512,8 +1888,28 @@
       note = "";
       nextLetter = 2;
       tooltipEl.hidden = true;
+      paramsFocused = false;
       canvas.style.cursor = modeCursor();
       refresh();
+    });
+    document.getElementById("apply-params").addEventListener("click", applyParamsText);
+    document.getElementById("copy-params").addEventListener("click", async () => {
+      try {
+        const text = paramsEl.value || formatParams(buildSnapshot());
+        await navigator.clipboard.writeText(text);
+        note = "Copied bridge parameters.";
+        renderStatus();
+      } catch (_) {
+        paramsEl.focus();
+        paramsEl.select();
+        note = "Select the text area and copy manually.";
+        renderStatus();
+      }
+    });
+    paramsEl.addEventListener("focus", () => { paramsFocused = true; });
+    paramsEl.addEventListener("blur", () => {
+      paramsFocused = false;
+      renderParams();
     });
     for (const input of [bridgeInput, spanInput, gridInput, stickInput]) {
       input.addEventListener("input", scheduleApply);
@@ -1542,41 +1938,22 @@
     new ResizeObserver(resize).observe(canvas.parentElement);
     window.addEventListener("resize", resize);
 
-    resetModel();
+    window.addEventListener("pagehide", persistDesign);
+    window.addEventListener("beforeunload", persistDesign);
+
+    if (!loadPersistedDesign()) {
+      resetModel();
+      syncDimensionInputs();
+    }
     refresh();
 
     window.__bridge = {
       getModel() {
         return {
-          bridgeLength,
-          spanLength,
-          gridSize,
-          maxStickLength,
-          nodes: nodes.map((node) => ({
-            id: node.id,
-            x: node.x,
-            y: node.y,
-            role: node.role || null,
-            label: node.label,
-          })),
-          members: members.map((member) => ({
-            id: member.id,
-            i: member.i,
-            j: member.j,
-            name: memberName(member),
-            length: (() => {
-              const a = nodeById(member.i);
-              const b = nodeById(member.j);
-              return a && b ? memberLength(a, b) : null;
-            })(),
-            force: result.forces ? result.forces.get(member.id) : null,
-          })),
-          unstable: result.unstable,
-          loadId,
-          status: statusEl.textContent,
-          error: errorEl.hidden ? "" : errorEl.textContent,
+          ...buildSnapshot(),
           emptyVisible: !emptyEl.hidden,
           showForces: showForces(),
+          error: errorEl.hidden ? "" : errorEl.textContent,
         };
       },
       worldToScreen(x, y) {
@@ -1585,6 +1962,8 @@
       },
       snapPoint,
       analyzeModel,
+      applySnapshot,
+      buildSnapshot,
     };
   </script>
 </body>
