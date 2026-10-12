@@ -1,0 +1,1307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Popsicle Bridge</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M5 26h22M6 26 16 7l10 19' fill='none' stroke='%232a241c' stroke-width='2' stroke-linejoin='round'/%3E%3Cpath d='M7 26h18' stroke='%23148f45' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      --bg: #efe6d8;
+      --paper: #fffaf3;
+      --ink: #2a241c;
+      --muted: #6f6558;
+      --line: #e4d8c8;
+      --button: #fffaf3;
+      --tension: #148f45;
+      --compression: #d12d28;
+      --tan: #c6a36e;
+      --load: #1c4f8a;
+      --shadow: 0 1px 2px rgba(42, 36, 28, 0.06), 0 8px 24px rgba(42, 36, 28, 0.04);
+    }
+
+    * { box-sizing: border-box; }
+
+    [hidden] { display: none !important; }
+
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      background:
+        linear-gradient(180deg, rgba(255, 250, 243, 0.7), rgba(255, 250, 243, 0) 120px),
+        var(--bg);
+      color: var(--ink);
+      font: 15px/1.45 "Segoe UI", "Avenir Next", "Helvetica Neue", sans-serif;
+    }
+
+    header {
+      padding: 16px 18px 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-family: Georgia, "Iowan Old Style", Palatino, serif;
+      font-size: 1.45rem;
+      font-weight: 650;
+      letter-spacing: -0.03em;
+    }
+
+    header p {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 18px;
+      align-items: flex-end;
+      padding: 14px 18px 0;
+    }
+
+    .modes {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    button {
+      font: inherit;
+      color: var(--ink);
+      background: var(--button);
+      border: 1px solid #ddcfbe;
+      border-radius: 999px;
+      padding: 7px 13px;
+      cursor: pointer;
+      box-shadow: var(--shadow);
+    }
+
+    button:hover { background: #fff; }
+
+    button[aria-pressed="true"] {
+      background: var(--ink);
+      border-color: var(--ink);
+      color: var(--paper);
+    }
+
+    #clear { margin-left: 4px; }
+
+    .dims {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 16px;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .field span.label {
+      font-size: 0.78rem;
+      letter-spacing: 0.01em;
+      color: var(--muted);
+    }
+
+    .entry {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    input {
+      font: inherit;
+      color: var(--ink);
+      background: white;
+      border: 1px solid #ddcfbe;
+      border-radius: 8px;
+      padding: 7px 10px;
+      width: 6.5rem;
+      max-width: 100%;
+    }
+
+    input[aria-invalid="true"] {
+      border-color: var(--compression);
+      background: #fff6f5;
+    }
+
+    .units {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    .form-error {
+      flex-basis: 100%;
+      margin: 0;
+      color: var(--compression);
+      font-size: 0.88rem;
+    }
+
+    .status {
+      margin: 8px 18px 10px;
+      min-height: 1.35em;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .status.warning { color: #8a3b22; }
+
+    .workspace {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      gap: 12px;
+      padding: 0 12px 12px;
+    }
+
+    .stage {
+      flex: 1;
+      min-width: 0;
+      min-height: 220px;
+      position: relative;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      cursor: crosshair;
+    }
+
+    .empty {
+      position: absolute;
+      left: 50%;
+      top: 14%;
+      transform: translateX(-50%);
+      width: min(36rem, calc(100% - 32px));
+      margin: 0;
+      text-align: center;
+      color: var(--muted);
+      pointer-events: none;
+    }
+
+    .tooltip {
+      position: absolute;
+      z-index: 2;
+      pointer-events: none;
+      background: var(--ink);
+      color: var(--paper);
+      border-radius: 7px;
+      padding: 4px 8px;
+      font-size: 0.8rem;
+      white-space: nowrap;
+    }
+
+    .results {
+      width: 250px;
+      flex: 0 0 auto;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 14px 14px 10px;
+      overflow: auto;
+      min-height: 0;
+    }
+
+    .results h2 {
+      margin: 0;
+      font-size: 0.95rem;
+      font-family: Georgia, "Iowan Old Style", Palatino, serif;
+      font-weight: 650;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      margin: 8px 0;
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+
+    .legend span { display: inline-flex; align-items: center; gap: 5px; }
+
+    .swatch {
+      width: 0.7rem;
+      height: 0.7rem;
+      border-radius: 99px;
+      display: inline-block;
+    }
+
+    .swatch.tension { background: var(--tension); }
+    .swatch.compression { background: var(--compression); }
+    .swatch.tan { background: var(--tan); }
+
+    #force-blurb {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .force-row {
+      display: grid;
+      grid-template-columns: 0.7rem 2.2rem 3.4rem 1fr;
+      gap: 6px;
+      align-items: center;
+      padding: 4px 0;
+      border-top: 1px solid var(--line);
+      font-variant-numeric: tabular-nums;
+      font-size: 0.86rem;
+    }
+
+    .force-row .kind { color: var(--muted); }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 2px solid var(--tension);
+      outline-offset: 2px;
+    }
+
+    @media (max-width: 800px) {
+      .workspace { flex-direction: column; }
+      .results { width: auto; max-height: 32vh; }
+      .stage { min-height: 260px; }
+      #clear { margin-left: 0; }
+    }
+
+    @media (max-width: 520px) {
+      header { padding: 12px 12px 0; }
+      .toolbar { padding: 12px 12px 0; }
+      .status { margin-left: 12px; margin-right: 12px; }
+      .field { flex: 1 1 8rem; }
+      input { width: 100%; }
+      h1 { font-size: 1.25rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Popsicle Bridge</h1>
+    <p>Pin-jointed sticks. Axial force only, as a fraction of one downward load.</p>
+  </header>
+
+  <div class="toolbar">
+    <div class="modes">
+      <button type="button" data-mode="joint" aria-pressed="true">Add joint</button>
+      <button type="button" data-mode="stick" aria-pressed="false">Add stick</button>
+      <button type="button" data-mode="load" aria-pressed="false">Set load</button>
+      <button type="button" data-mode="delete" aria-pressed="false">Delete</button>
+      <button type="button" id="clear">Clear</button>
+    </div>
+    <div class="dims">
+      <label class="field">
+        <span class="label">Bridge length</span>
+        <span class="entry">
+          <input id="bridge-length" type="number" min="0" step="any" value="10" inputmode="decimal" autocomplete="off">
+          <span class="units">units</span>
+        </span>
+      </label>
+      <label class="field">
+        <span class="label">Span</span>
+        <span class="entry">
+          <input id="span-length" type="number" min="0" step="any" value="8" inputmode="decimal" autocomplete="off">
+          <span class="units">units</span>
+        </span>
+      </label>
+    </div>
+    <p id="form-error" class="form-error" role="alert" hidden></p>
+  </div>
+
+  <p id="status" class="status" role="status"></p>
+
+  <div class="workspace">
+    <div class="stage">
+      <canvas id="canvas" aria-label="Bridge drawing. Place joints, connect sticks into the two supports, then set the load."></canvas>
+      <p id="empty" class="empty">Place joints, connect sticks into the two supports, then set the load.</p>
+      <div id="tooltip" class="tooltip" hidden></div>
+    </div>
+    <aside class="results" aria-label="Member forces">
+      <h2>Member forces</h2>
+      <p class="legend">
+        <span><i class="swatch tension"></i> Tension</span>
+        <span><i class="swatch compression"></i> Compression</span>
+        <span><i class="swatch tan"></i> Unloaded</span>
+      </p>
+      <p id="force-blurb"></p>
+      <div id="force-list"></div>
+    </aside>
+  </div>
+
+  <script>
+    const UNSTABLE_MSG = "The bridge is unstable and needs more sticks or a joint tied into both supports.";
+    const NO_LOAD_MSG = "No load yet. Choose Set load and click a joint.";
+    const MIN_WIDTH = 3;
+    const MAX_WIDTH = 16;
+    const NEAR_ZERO = 1e-3;
+
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const emptyEl = document.getElementById("empty");
+    const tooltipEl = document.getElementById("tooltip");
+    const statusEl = document.getElementById("status");
+    const errorEl = document.getElementById("form-error");
+    const blurbEl = document.getElementById("force-blurb");
+    const listEl = document.getElementById("force-list");
+    const bridgeInput = document.getElementById("bridge-length");
+    const spanInput = document.getElementById("span-length");
+    const modeButtons = [...document.querySelectorAll("[data-mode]")];
+
+    const color = {
+      tension: cssVar("--tension", "#148f45"),
+      compression: cssVar("--compression", "#d12d28"),
+      tan: cssVar("--tan", "#c6a36e"),
+      ink: cssVar("--ink", "#2a241c"),
+      paper: cssVar("--paper", "#fffaf3"),
+      load: cssVar("--load", "#1c4f8a"),
+      muted: cssVar("--muted", "#6f6558"),
+    };
+
+    let bridgeLength = 10;
+    let spanLength = 8;
+    let nextId = 1;
+    let nextLetter = 2;
+    let nodes = [];
+    let members = [];
+    let loadId = null;
+    let mode = "joint";
+    let stickStart = null;
+    let hoverId = null;
+    let note = "";
+    let result = { unstable: true, forces: null };
+    let view = null;
+    let inputTimer = 0;
+
+    function cssVar(name, fallback) {
+      const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return value || fallback;
+    }
+
+    function indexToLetters(index) {
+      let n = index + 1;
+      let s = "";
+      while (n > 0) {
+        n -= 1;
+        s = String.fromCharCode(65 + (n % 26)) + s;
+        n = Math.floor(n / 26);
+      }
+      return s;
+    }
+
+    function nodeById(id) {
+      return nodes.find((node) => node.id === id) || null;
+    }
+
+    function isEmpty() {
+      return members.length === 0 && nodes.every((node) => node.role);
+    }
+
+    function positionSupports() {
+      const overhang = (bridgeLength - spanLength) / 2;
+      const pin = nodes.find((node) => node.role === "pin");
+      const roller = nodes.find((node) => node.role === "roller");
+      pin.x = overhang;
+      pin.y = 0;
+      roller.x = overhang + spanLength;
+      roller.y = 0;
+    }
+
+    function resetModel() {
+      nextId = 1;
+      nextLetter = 2;
+      nodes = [
+        { id: nextId++, x: 0, y: 0, role: "pin", label: "A" },
+        { id: nextId++, x: 0, y: 0, role: "roller", label: "B" },
+      ];
+      members = [];
+      loadId = null;
+      stickStart = null;
+      hoverId = null;
+      note = "";
+      positionSupports();
+    }
+
+    function memberName(member) {
+      const a = nodeById(member.i).label;
+      const b = nodeById(member.j).label;
+      return a < b ? a + b : b + a;
+    }
+
+    function findMember(a, b) {
+      return members.find((member) =>
+        (member.i === a && member.j === b) || (member.i === b && member.j === a)
+      );
+    }
+
+    // Direct stiffness, 2D truss, EA = 1. y is upward.
+    // Positive axial force is tension: N = (EA/L) * elongation,
+    // where elongation projects (u_j - u_i) along the member from i to j.
+    function analyzeModel(modelNodes, modelMembers, modelLoadId) {
+      const count = modelNodes.length;
+      const index = new Map(modelNodes.map((node, i) => [node.id, i]));
+      const ndof = count * 2;
+      const K = Array.from({ length: ndof }, () => Array(ndof).fill(0));
+
+      for (const member of modelMembers) {
+        const ia = index.get(member.i);
+        const ib = index.get(member.j);
+        if (ia == null || ib == null) continue;
+        const a = modelNodes[ia];
+        const b = modelNodes[ib];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const length = Math.hypot(dx, dy);
+        if (length < 1e-9) continue;
+        const c = dx / length;
+        const s = dy / length;
+        const k = 1 / length;
+        const cc = c * c * k;
+        const ss = s * s * k;
+        const cs = c * s * k;
+        const dof = [ia * 2, ia * 2 + 1, ib * 2, ib * 2 + 1];
+        const ke = [
+          [cc, cs, -cc, -cs],
+          [cs, ss, -cs, -ss],
+          [-cc, -cs, cc, cs],
+          [-cs, -ss, cs, ss],
+        ];
+        for (let r = 0; r < 4; r++) {
+          for (let c2 = 0; c2 < 4; c2++) K[dof[r]][dof[c2]] += ke[r][c2];
+        }
+      }
+
+      const fixed = Array(ndof).fill(false);
+      modelNodes.forEach((node, i) => {
+        if (node.role === "pin") {
+          fixed[i * 2] = true;
+          fixed[i * 2 + 1] = true;
+        } else if (node.role === "roller") {
+          fixed[i * 2 + 1] = true;
+        }
+      });
+
+      const free = [];
+      for (let i = 0; i < ndof; i++) if (!fixed[i]) free.push(i);
+
+      const F = Array(ndof).fill(0);
+      if (modelLoadId != null) {
+        const li = index.get(modelLoadId);
+        if (li != null) F[li * 2 + 1] = -1;
+      }
+
+      const reducedK = free.map((row) => free.map((col) => K[row][col]));
+      const reducedF = free.map((dof) => F[dof]);
+      const solved = solveSystem(reducedK, reducedF);
+      if (!solved) return { unstable: true, forces: null };
+
+      const u = Array(ndof).fill(0);
+      free.forEach((dof, i) => { u[dof] = solved[i]; });
+      if (u.some((value) => !Number.isFinite(value) || Math.abs(value) > 1e6)) {
+        return { unstable: true, forces: null };
+      }
+
+      const forces = new Map();
+      for (const member of modelMembers) {
+        const ia = index.get(member.i);
+        const ib = index.get(member.j);
+        const a = modelNodes[ia];
+        const b = modelNodes[ib];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const length = Math.hypot(dx, dy);
+        if (length < 1e-9) {
+          forces.set(member.id, 0);
+          continue;
+        }
+        const c = dx / length;
+        const s = dy / length;
+        const elongation = c * (u[ib * 2] - u[ia * 2]) + s * (u[ib * 2 + 1] - u[ia * 2 + 1]);
+        const axial = elongation / length;
+        if (!Number.isFinite(axial)) return { unstable: true, forces: null };
+        forces.set(member.id, axial);
+      }
+      return { unstable: false, forces };
+    }
+
+    function solveSystem(matrix, vector) {
+      const n = vector.length;
+      if (n === 0) return [];
+      const A = matrix.map((row) => row.slice());
+      const b = vector.slice();
+      let scale = 0;
+      for (let r = 0; r < n; r++) {
+        for (let c = 0; c < n; c++) scale = Math.max(scale, Math.abs(A[r][c]));
+      }
+      const tol = 1e-10 * Math.max(scale, 1);
+      for (let i = 0; i < n; i++) {
+        let pivot = i;
+        for (let r = i + 1; r < n; r++) {
+          if (Math.abs(A[r][i]) > Math.abs(A[pivot][i])) pivot = r;
+        }
+        if (!Number.isFinite(A[pivot][i]) || Math.abs(A[pivot][i]) < tol) return null;
+        if (pivot !== i) {
+          const row = A[i];
+          A[i] = A[pivot];
+          A[pivot] = row;
+          const rhs = b[i];
+          b[i] = b[pivot];
+          b[pivot] = rhs;
+        }
+        const diag = A[i][i];
+        for (let r = i + 1; r < n; r++) {
+          const factor = A[r][i] / diag;
+          A[r][i] = 0;
+          for (let c = i + 1; c < n; c++) A[r][c] -= factor * A[i][c];
+          b[r] -= factor * b[i];
+        }
+      }
+      const x = Array(n);
+      for (let i = n - 1; i >= 0; i--) {
+        let sum = b[i];
+        for (let c = i + 1; c < n; c++) sum -= A[i][c] * x[c];
+        if (!Number.isFinite(A[i][i]) || Math.abs(A[i][i]) < tol) return null;
+        x[i] = sum / A[i][i];
+        if (!Number.isFinite(x[i])) return null;
+      }
+      return x;
+    }
+
+    function solve() {
+      result = analyzeModel(nodes, members, loadId);
+    }
+
+    function showForces() {
+      return !result.unstable && loadId != null && result.forces != null;
+    }
+
+    function maxAbsForce() {
+      if (!showForces()) return 0;
+      let max = 0;
+      for (const value of result.forces.values()) max = Math.max(max, Math.abs(value));
+      return max;
+    }
+
+    function memberStyle(member) {
+      if (!showForces()) return { color: color.tan, width: 4.5, kind: "unloaded", text: "" };
+      const value = result.forces.get(member.id) || 0;
+      const magnitude = Math.abs(value);
+      if (magnitude < NEAR_ZERO) {
+        return { color: color.tan, width: MIN_WIDTH, kind: "unloaded", text: "0.00 unloaded", value };
+      }
+      const width = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, MAX_WIDTH * (magnitude / Math.max(maxAbsForce(), NEAR_ZERO))));
+      if (value > 0) {
+        return { color: color.tension, width, kind: "tension", text: `${value.toFixed(2)} tension`, value };
+      }
+      return { color: color.compression, width, kind: "compression", text: `${value.toFixed(2)} compression`, value };
+    }
+
+    function modelStatus() {
+      if (isEmpty()) return "Pin at the left end of the span, roller at the right.";
+      if (result.unstable) return UNSTABLE_MSG;
+      if (loadId == null) return NO_LOAD_MSG;
+      return "Solved. Hover a stick to read its force. Positive is tension.";
+    }
+
+    function renderStatus() {
+      const text = note || modelStatus();
+      statusEl.textContent = text;
+      statusEl.classList.toggle("warning", !note && !isEmpty() && result.unstable);
+    }
+
+    function renderPanel() {
+      listEl.replaceChildren();
+      if (isEmpty()) {
+        blurbEl.textContent = "No sticks yet.";
+        return;
+      }
+      if (result.unstable) {
+        blurbEl.textContent = "Not available while the bridge is unstable.";
+        return;
+      }
+      if (loadId == null) {
+        blurbEl.textContent = "No load yet.";
+        return;
+      }
+      const loaded = nodeById(loadId);
+      blurbEl.textContent = `Downward load 1 at ${loaded ? loaded.label : "a joint"}.`;
+      const rows = [...members].sort((a, b) => memberName(a).localeCompare(memberName(b)));
+      for (const member of rows) {
+        const style = memberStyle(member);
+        const row = document.createElement("div");
+        row.className = "force-row";
+        const swatch = document.createElement("i");
+        swatch.className = "swatch";
+        swatch.style.background = style.color;
+        const name = document.createElement("span");
+        name.textContent = memberName(member);
+        const value = document.createElement("span");
+        value.textContent = style.kind === "unloaded" ? "0.00" : style.value.toFixed(2);
+        const kind = document.createElement("span");
+        kind.className = "kind";
+        kind.textContent = style.kind;
+        row.append(swatch, name, value, kind);
+        listEl.append(row);
+      }
+    }
+
+    function refresh() {
+      solve();
+      renderStatus();
+      renderPanel();
+      draw();
+    }
+
+    function readDimensions() {
+      const bridge = Number(bridgeInput.value);
+      const span = Number(spanInput.value);
+      if (!Number.isFinite(bridge) || !Number.isFinite(span) || bridge <= 0 || span <= 0) {
+        return { error: "Bridge length and span must be positive numbers." };
+      }
+      if (span > bridge) return { error: "Span is longer than the bridge length." };
+      return { bridge, span };
+    }
+
+    function applyDimensions() {
+      const parsed = readDimensions();
+      if (parsed.error) {
+        errorEl.hidden = false;
+        errorEl.textContent = parsed.error;
+        const bridge = Number(bridgeInput.value);
+        const span = Number(spanInput.value);
+        const bridgeBad = !Number.isFinite(bridge) || bridge <= 0;
+        const spanBad = !Number.isFinite(span) || span <= 0 || (Number.isFinite(bridge) && span > bridge);
+        bridgeInput.toggleAttribute("aria-invalid", bridgeBad);
+        spanInput.toggleAttribute("aria-invalid", spanBad);
+        return;
+      }
+      errorEl.hidden = true;
+      errorEl.textContent = "";
+      bridgeInput.removeAttribute("aria-invalid");
+      spanInput.removeAttribute("aria-invalid");
+      if (Math.abs(parsed.bridge - bridgeLength) < 1e-12 && Math.abs(parsed.span - spanLength) < 1e-12) return;
+      const scale = parsed.bridge / bridgeLength;
+      if (Math.abs(scale - 1) > 1e-12) {
+        for (const node of nodes) {
+          if (node.role) continue;
+          node.x *= scale;
+          node.y *= scale;
+        }
+      }
+      bridgeLength = parsed.bridge;
+      spanLength = parsed.span;
+      note = "";
+      positionSupports();
+      refresh();
+    }
+
+    function scheduleApply() {
+      clearTimeout(inputTimer);
+      inputTimer = setTimeout(applyDimensions, 300);
+    }
+
+    function setMode(next) {
+      mode = next;
+      stickStart = null;
+      note = "";
+      for (const button of modeButtons) {
+        button.setAttribute("aria-pressed", button.dataset.mode === mode ? "true" : "false");
+      }
+      canvas.style.cursor = mode === "joint" || mode === "stick" ? "crosshair" : "pointer";
+      renderStatus();
+      draw();
+    }
+
+    function ensureView() {
+      const w = canvas.clientWidth || 1;
+      const h = canvas.clientHeight || 1;
+      let minX = 0;
+      let maxX = bridgeLength;
+      let minY = 0;
+      let maxY = 0;
+      for (const node of nodes) {
+        minX = Math.min(minX, node.x);
+        maxX = Math.max(maxX, node.x);
+        minY = Math.min(minY, node.y);
+        maxY = Math.max(maxY, node.y);
+      }
+      const minH = bridgeLength * 0.55;
+      if (maxY - minY < minH) maxY = minY + minH;
+      const padL = 52;
+      const padR = 52;
+      const padT = 76;
+      const padB = 92;
+      const worldW = Math.max(maxX - minX, 1e-6);
+      const worldH = Math.max(maxY - minY, 1e-6);
+      const availW = Math.max(w - padL - padR, 20);
+      const availH = Math.max(h - padT - padB, 20);
+      const scale = Math.min(availW / worldW, availH / worldH);
+      const drawW = worldW * scale;
+      const drawH = worldH * scale;
+      view = {
+        minX,
+        maxY,
+        scale,
+        ox: padL + (availW - drawW) / 2,
+        oy: padT + (availH - drawH) / 2,
+      };
+      return view;
+    }
+
+    function worldToScreen(x, y) {
+      if (!view) ensureView();
+      return {
+        x: view.ox + (x - view.minX) * view.scale,
+        y: view.oy + (view.maxY - y) * view.scale,
+      };
+    }
+
+    function screenToWorld(x, y) {
+      if (!view) ensureView();
+      return {
+        x: view.minX + (x - view.ox) / view.scale,
+        y: view.maxY - (y - view.oy) / view.scale,
+      };
+    }
+
+    function snapRadius() {
+      if (!view) ensureView();
+      return Math.max(16 / view.scale, bridgeLength * 0.02);
+    }
+
+    function nearestJoint(world, radius) {
+      let best = null;
+      let bestD = radius;
+      for (const node of nodes) {
+        const d = Math.hypot(node.x - world.x, node.y - world.y);
+        if (d <= bestD) {
+          best = node;
+          bestD = d;
+        }
+      }
+      return best;
+    }
+
+    function distToSegment(px, py, ax, ay, bx, by) {
+      const dx = bx - ax;
+      const dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      let t = len2 < 1e-9 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      const x = ax + t * dx;
+      const y = ay + t * dy;
+      return Math.hypot(px - x, py - y);
+    }
+
+    function memberAt(sx, sy) {
+      let best = null;
+      let bestD = Infinity;
+      for (const member of members) {
+        const a = nodeById(member.i);
+        const b = nodeById(member.j);
+        const pa = worldToScreen(a.x, a.y);
+        const pb = worldToScreen(b.x, b.y);
+        const d = distToSegment(sx, sy, pa.x, pa.y, pb.x, pb.y);
+        const limit = Math.max(12, memberStyle(member).width / 2 + 4);
+        if (d <= limit && d < bestD) {
+          best = member;
+          bestD = d;
+        }
+      }
+      return best;
+    }
+
+    function addJoint(world) {
+      const existing = nearestJoint(world, snapRadius());
+      if (existing) {
+        note = existing.role ? "Snapped to the support joint." : "That joint is already there.";
+        renderStatus();
+        return;
+      }
+      nodes.push({
+        id: nextId++,
+        x: world.x,
+        y: world.y,
+        label: indexToLetters(nextLetter++),
+      });
+      note = "";
+      refresh();
+    }
+
+    function addStick(joint) {
+      if (!stickStart) {
+        stickStart = joint.id;
+        note = "Click a second joint to place the stick.";
+        renderStatus();
+        draw();
+        return;
+      }
+      if (stickStart === joint.id) return;
+      if (findMember(stickStart, joint.id)) {
+        stickStart = null;
+        note = "That stick is already there.";
+        renderStatus();
+        draw();
+        return;
+      }
+      const a = nodeById(stickStart);
+      if (Math.hypot(a.x - joint.x, a.y - joint.y) < 1e-9) return;
+      members.push({ id: nextId++, i: stickStart, j: joint.id });
+      stickStart = null;
+      note = "";
+      refresh();
+    }
+
+    function setLoad(joint) {
+      loadId = joint.id;
+      note = "";
+      refresh();
+    }
+
+    function deleteAt(sx, sy, world) {
+      const joint = nearestJoint(world, snapRadius());
+      if (joint) {
+        if (joint.role) {
+          note = "Supports stay with the span.";
+          renderStatus();
+          return;
+        }
+        members = members.filter((member) => member.i !== joint.id && member.j !== joint.id);
+        nodes = nodes.filter((node) => node.id !== joint.id);
+        if (loadId === joint.id) loadId = null;
+        if (stickStart === joint.id) stickStart = null;
+        note = "";
+        refresh();
+        return;
+      }
+      const member = memberAt(sx, sy);
+      if (!member) return;
+      members = members.filter((item) => item.id !== member.id);
+      if (hoverId === member.id) hoverId = null;
+      note = "";
+      refresh();
+    }
+
+    function onPointerDown(event) {
+      if (event.button !== 0) return;
+      const world = screenToWorld(event.offsetX, event.offsetY);
+      if (mode === "joint") {
+        addJoint(world);
+        return;
+      }
+      const joint = nearestJoint(world, snapRadius());
+      if (mode === "stick") {
+        if (!joint) {
+          stickStart = null;
+          note = "";
+          renderStatus();
+          draw();
+          return;
+        }
+        addStick(joint);
+        return;
+      }
+      if (mode === "load") {
+        if (!joint) {
+          note = "Click a joint to place the load.";
+          renderStatus();
+          return;
+        }
+        setLoad(joint);
+        return;
+      }
+      if (mode === "delete") deleteAt(event.offsetX, event.offsetY, world);
+    }
+
+    function onPointerMove(event) {
+      const member = memberAt(event.offsetX, event.offsetY);
+      const id = member ? member.id : null;
+      if (id !== hoverId) {
+        hoverId = id;
+        draw();
+      }
+      if (!member) {
+        tooltipEl.hidden = true;
+        return;
+      }
+      const style = memberStyle(member);
+      let text = `${memberName(member)} · `;
+      if (result.unstable) text += "unstable";
+      else if (loadId == null) text += "no load yet";
+      else text += style.text;
+      tooltipEl.textContent = text;
+      tooltipEl.hidden = false;
+      const width = tooltipEl.offsetWidth;
+      const height = tooltipEl.offsetHeight;
+      const boundsW = canvas.clientWidth;
+      const boundsH = canvas.clientHeight;
+      let x = event.offsetX - width / 2;
+      let y = event.offsetY - height - 12;
+      if (y < 8) y = event.offsetY + 16;
+      x = Math.max(8, Math.min(boundsW - width - 8, x));
+      y = Math.max(8, Math.min(boundsH - height - 8, y));
+      tooltipEl.style.left = `${x}px`;
+      tooltipEl.style.top = `${y}px`;
+    }
+
+    function drawDeck() {
+      const pin = nodes.find((node) => node.role === "pin");
+      const roller = nodes.find((node) => node.role === "roller");
+      strokeWorld(0, 0, pin.x, 0, "#d5c7b6", 1.5, [5, 4]);
+      strokeWorld(pin.x, 0, roller.x, 0, "#b7a894", 2, []);
+      strokeWorld(roller.x, 0, bridgeLength, 0, "#d5c7b6", 1.5, [5, 4]);
+      for (const x of [0, bridgeLength]) {
+        const p = worldToScreen(x, 0);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - 6);
+        ctx.lineTo(p.x, p.y + 6);
+        ctx.strokeStyle = "#b7a894";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+        ctx.stroke();
+      }
+    }
+
+    function strokeWorld(x1, y1, x2, y2, stroke, width, dash) {
+      const a = worldToScreen(x1, y1);
+      const b = worldToScreen(x2, y2);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = width;
+      ctx.setLineDash(dash);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    function drawSupport(node) {
+      const p = worldToScreen(node.x, node.y);
+      ctx.save();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = color.ink;
+      ctx.fillStyle = color.paper;
+      ctx.lineJoin = "round";
+      if (node.role === "pin") {
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y + 4);
+        ctx.lineTo(p.x - 14, p.y + 24);
+        ctx.lineTo(p.x + 14, p.y + 24);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(p.x - 22, p.y + 28);
+        ctx.lineTo(p.x + 22, p.y + 28);
+        ctx.stroke();
+        for (let i = -16; i <= 16; i += 6) {
+          ctx.beginPath();
+          ctx.moveTo(p.x + i, p.y + 28);
+          ctx.lineTo(p.x + i - 5, p.y + 36);
+          ctx.stroke();
+        }
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y + 4);
+        ctx.lineTo(p.x - 14, p.y + 20);
+        ctx.lineTo(p.x + 14, p.y + 20);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(p.x, p.y + 26, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(p.x - 22, p.y + 34);
+        ctx.lineTo(p.x + 22, p.y + 34);
+        ctx.stroke();
+        for (let i = -16; i <= 16; i += 6) {
+          ctx.beginPath();
+          ctx.moveTo(p.x + i, p.y + 34);
+          ctx.lineTo(p.x + i - 5, p.y + 42);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+
+    function drawSupportCaption(node, showWord) {
+      const p = worldToScreen(node.x, node.y);
+      ctx.fillStyle = color.muted;
+      ctx.font = "11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      if (showWord) ctx.fillText(node.role === "pin" ? "pin" : "roller", p.x, p.y + 46);
+    }
+
+    function drawJoint(node) {
+      const p = worldToScreen(node.x, node.y);
+      if (stickStart === node.id) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
+        ctx.strokeStyle = color.load;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 5.5, 0, Math.PI * 2);
+      ctx.fillStyle = color.paper;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = color.ink;
+      ctx.stroke();
+    }
+
+    function drawLabel(node) {
+      const p = worldToScreen(node.x, node.y);
+      ctx.font = "600 13px sans-serif";
+      ctx.fillStyle = color.ink;
+      ctx.textBaseline = "middle";
+      if (node.id === loadId) {
+        ctx.textAlign = "right";
+        ctx.fillText(node.label, p.x - 12, p.y - 12);
+      } else {
+        ctx.textAlign = "left";
+        ctx.fillText(node.label, p.x + 10, p.y - 12);
+      }
+    }
+
+    function drawLoad(node) {
+      const p = worldToScreen(node.x, node.y);
+      const tip = p.y - 10;
+      const tail = p.y - 46;
+      ctx.save();
+      ctx.strokeStyle = color.load;
+      ctx.fillStyle = color.load;
+      ctx.lineWidth = 2;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(p.x, tail);
+      ctx.lineTo(p.x, tip);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p.x, tip + 1);
+      ctx.lineTo(p.x - 6, tip - 11);
+      ctx.lineTo(p.x + 6, tip - 11);
+      ctx.closePath();
+      ctx.fill();
+      ctx.font = "600 13px sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText("1", p.x + 10, (tail + tip) / 2);
+      ctx.restore();
+    }
+
+    function drawForceLabels() {
+      if (!showForces()) return;
+      let cx = 0;
+      let cy = 0;
+      for (const node of nodes) {
+        const p = worldToScreen(node.x, node.y);
+        cx += p.x;
+        cy += p.y;
+      }
+      cx /= nodes.length;
+      cy /= nodes.length;
+      ctx.save();
+      ctx.font = "600 12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      const placed = [];
+      for (const member of members) {
+        const style = memberStyle(member);
+        if (!style.text) continue;
+        const a = nodeById(member.i);
+        const b = nodeById(member.j);
+        const pa = worldToScreen(a.x, a.y);
+        const pb = worldToScreen(b.x, b.y);
+        const mx = (pa.x + pb.x) / 2;
+        const my = (pa.y + pb.y) / 2;
+        const dx = pb.x - pa.x;
+        const dy = pb.y - pa.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const textWidth = ctx.measureText(style.text).width;
+        if (textWidth + 28 > len * 0.62) continue;
+        let px = -dy / len;
+        let py = dx / len;
+        if (px * (mx - cx) + py * (my - cy) < 0) {
+          px = -px;
+          py = -py;
+        }
+        const x = mx + px * 18;
+        const y = my + py * 18;
+        const box = { x: x - textWidth / 2 - 4, y: y - 9, w: textWidth + 8, h: 18 };
+        const hits = placed.some((other) =>
+          box.x < other.x + other.w && box.x + box.w > other.x && box.y < other.y + other.h && box.y + box.h > other.y
+        );
+        if (hits) continue;
+        placed.push(box);
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = "rgba(255, 250, 243, 0.94)";
+        ctx.strokeText(style.text, x, y);
+        ctx.fillStyle = color.ink;
+        ctx.fillText(style.text, x, y);
+      }
+      ctx.restore();
+    }
+
+    function draw() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(1, canvas.clientWidth);
+      const height = Math.max(1, canvas.clientHeight);
+      const bitmapW = Math.max(1, Math.round(width * dpr));
+      const bitmapH = Math.max(1, Math.round(height * dpr));
+      if (canvas.width !== bitmapW || canvas.height !== bitmapH) {
+        canvas.width = bitmapW;
+        canvas.height = bitmapH;
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ensureView();
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = color.paper;
+      ctx.fillRect(0, 0, width, height);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      drawDeck();
+
+      for (const member of members) {
+        const style = memberStyle(member);
+        const a = nodeById(member.i);
+        const b = nodeById(member.j);
+        const pa = worldToScreen(a.x, a.y);
+        const pb = worldToScreen(b.x, b.y);
+        if (member.id === hoverId) {
+          ctx.beginPath();
+          ctx.moveTo(pa.x, pa.y);
+          ctx.lineTo(pb.x, pb.y);
+          ctx.strokeStyle = "rgba(42, 36, 28, 0.22)";
+          ctx.lineWidth = style.width + 6;
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.moveTo(pa.x, pa.y);
+        ctx.lineTo(pb.x, pb.y);
+        ctx.strokeStyle = style.color;
+        ctx.lineWidth = style.width;
+        ctx.stroke();
+      }
+
+      const pin = nodes.find((node) => node.role === "pin");
+      const roller = nodes.find((node) => node.role === "roller");
+      const pinPt = worldToScreen(pin.x, pin.y);
+      const rollerPt = worldToScreen(roller.x, roller.y);
+      const showWords = Math.hypot(pinPt.x - rollerPt.x, pinPt.y - rollerPt.y) > 96;
+      for (const node of nodes) if (node.role) drawSupport(node);
+      for (const node of nodes) drawJoint(node);
+      for (const node of nodes) if (node.role) drawSupportCaption(node, showWords);
+      for (const node of nodes) drawLabel(node);
+      if (loadId != null) {
+        const loaded = nodeById(loadId);
+        if (loaded) drawLoad(loaded);
+      }
+      drawForceLabels();
+      emptyEl.hidden = !isEmpty();
+    }
+
+    function resize() {
+      draw();
+    }
+
+    modeButtons.forEach((button) => {
+      button.addEventListener("click", () => setMode(button.dataset.mode));
+    });
+    document.getElementById("clear").addEventListener("click", () => {
+      const pin = nodes.find((node) => node.role === "pin");
+      const roller = nodes.find((node) => node.role === "roller");
+      nodes = [pin, roller];
+      members = [];
+      loadId = null;
+      stickStart = null;
+      hoverId = null;
+      note = "";
+      nextLetter = 2;
+      tooltipEl.hidden = true;
+      refresh();
+    });
+    bridgeInput.addEventListener("input", scheduleApply);
+    spanInput.addEventListener("input", scheduleApply);
+    bridgeInput.addEventListener("change", () => {
+      clearTimeout(inputTimer);
+      applyDimensions();
+    });
+    spanInput.addEventListener("change", () => {
+      clearTimeout(inputTimer);
+      applyDimensions();
+    });
+    for (const input of [bridgeInput, spanInput]) {
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        clearTimeout(inputTimer);
+        applyDimensions();
+      });
+    }
+    canvas.addEventListener("pointerdown", onPointerDown);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerleave", () => {
+      hoverId = null;
+      tooltipEl.hidden = true;
+      draw();
+    });
+    canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+    new ResizeObserver(resize).observe(canvas.parentElement);
+    window.addEventListener("resize", resize);
+
+    resetModel();
+    refresh();
+
+    window.__bridge = {
+      getModel() {
+        return {
+          bridgeLength,
+          spanLength,
+          nodes: nodes.map((node) => ({
+            id: node.id,
+            x: node.x,
+            y: node.y,
+            role: node.role || null,
+            label: node.label,
+          })),
+          members: members.map((member) => ({
+            id: member.id,
+            i: member.i,
+            j: member.j,
+            name: memberName(member),
+            force: result.forces ? result.forces.get(member.id) : null,
+          })),
+          unstable: result.unstable,
+          loadId,
+          status: statusEl.textContent,
+          error: errorEl.hidden ? "" : errorEl.textContent,
+          emptyVisible: !emptyEl.hidden,
+          showForces: showForces(),
+        };
+      },
+      worldToScreen(x, y) {
+        ensureView();
+        return worldToScreen(x, y);
+      },
+      analyzeModel,
+    };
+  </script>
+</body>
+</html>
