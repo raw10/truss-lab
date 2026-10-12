@@ -298,6 +298,7 @@
     <div class="modes">
       <button type="button" data-mode="joint" aria-pressed="true">Add joint</button>
       <button type="button" data-mode="stick" aria-pressed="false">Add stick</button>
+      <button type="button" data-mode="move" aria-pressed="false">Move</button>
       <button type="button" data-mode="load" aria-pressed="false">Set load</button>
       <button type="button" data-mode="delete" aria-pressed="false">Delete</button>
       <button type="button" id="clear">Clear</button>
@@ -307,14 +308,28 @@
         <span class="label">Bridge length</span>
         <span class="entry">
           <input id="bridge-length" type="number" min="0" step="any" value="10" inputmode="decimal" autocomplete="off">
-          <span class="units">units</span>
+          <span class="units">in</span>
         </span>
       </label>
       <label class="field">
         <span class="label">Span</span>
         <span class="entry">
           <input id="span-length" type="number" min="0" step="any" value="8" inputmode="decimal" autocomplete="off">
-          <span class="units">units</span>
+          <span class="units">in</span>
+        </span>
+      </label>
+      <label class="field">
+        <span class="label">Grid</span>
+        <span class="entry">
+          <input id="grid-size" type="number" min="0" step="any" value="0.5" inputmode="decimal" autocomplete="off">
+          <span class="units">in</span>
+        </span>
+      </label>
+      <label class="field">
+        <span class="label">Stick length</span>
+        <span class="entry">
+          <input id="stick-length" type="number" min="0" step="any" value="4.5" inputmode="decimal" autocomplete="off">
+          <span class="units">in</span>
         </span>
       </label>
     </div>
@@ -325,8 +340,8 @@
 
   <div class="workspace">
     <div class="stage">
-      <canvas id="canvas" aria-label="Bridge drawing. Place joints, connect sticks into the two supports, then set the load."></canvas>
-      <p id="empty" class="empty">Place joints, connect sticks into the two supports, then set the load.</p>
+      <canvas id="canvas" aria-label="Bridge drawing. Place joints on the grid, connect sticks into the two supports, then set the load."></canvas>
+      <p id="empty" class="empty">Place joints on the grid, connect sticks into the two supports, then set the load.</p>
       <div id="tooltip" class="tooltip" hidden></div>
     </div>
     <aside class="results" aria-label="Member forces">
@@ -358,6 +373,8 @@
     const listEl = document.getElementById("force-list");
     const bridgeInput = document.getElementById("bridge-length");
     const spanInput = document.getElementById("span-length");
+    const gridInput = document.getElementById("grid-size");
+    const stickInput = document.getElementById("stick-length");
     const modeButtons = [...document.querySelectorAll("[data-mode]")];
 
     const color = {
@@ -372,6 +389,8 @@
 
     let bridgeLength = 10;
     let spanLength = 8;
+    let gridSize = 0.5;
+    let maxStickLength = 4.5;
     let nextId = 1;
     let nextLetter = 2;
     let nodes = [];
@@ -380,6 +399,8 @@
     let mode = "joint";
     let stickStart = null;
     let hoverId = null;
+    let dragId = null;
+    let dragMoved = false;
     let note = "";
     let result = { unstable: true, forces: null };
     let view = null;
@@ -409,6 +430,53 @@
       return members.length === 0 && nodes.every((node) => node.role);
     }
 
+    function snapCoord(value) {
+      if (!(gridSize > 0)) return value;
+      return Math.round(value / gridSize) * gridSize;
+    }
+
+    function snapPoint(x, y) {
+      return { x: snapCoord(x), y: snapCoord(y) };
+    }
+
+    function nearlyEqual(a, b) {
+      return Math.abs(a - b) < 1e-9;
+    }
+
+    function jointAtPoint(x, y, exceptId) {
+      return nodes.find((node) =>
+        node.id !== exceptId && nearlyEqual(node.x, x) && nearlyEqual(node.y, y)
+      ) || null;
+    }
+
+    function memberLength(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function stickTooLong(length) {
+      return length > maxStickLength + 1e-9;
+    }
+
+    function formatInches(value) {
+      const rounded = Math.round(value * 1000) / 1000;
+      return `${rounded}"`;
+    }
+
+    function connectedStickOverflow(nodeId, x, y) {
+      const trial = { x, y };
+      for (const member of members) {
+        if (member.i !== nodeId && member.j !== nodeId) continue;
+        const otherId = member.i === nodeId ? member.j : member.i;
+        const other = nodeById(otherId);
+        if (!other) continue;
+        const length = memberLength(trial, other);
+        if (stickTooLong(length)) {
+          return { name: memberName(member), length };
+        }
+      }
+      return null;
+    }
+
     function positionSupports() {
       const overhang = (bridgeLength - spanLength) / 2;
       const pin = nodes.find((node) => node.role === "pin");
@@ -417,6 +485,15 @@
       pin.y = 0;
       roller.x = overhang + spanLength;
       roller.y = 0;
+    }
+
+    function resnapFreeJoints() {
+      for (const node of nodes) {
+        if (node.role) continue;
+        const snapped = snapPoint(node.x, node.y);
+        node.x = snapped.x;
+        node.y = snapped.y;
+      }
     }
 
     function resetModel() {
@@ -609,7 +686,9 @@
     }
 
     function modelStatus() {
-      if (isEmpty()) return "Pin at the left end of the span, roller at the right.";
+      if (isEmpty()) {
+        return `Pin at the left end of the span, roller at the right. Grid ${formatInches(gridSize)}, sticks up to ${formatInches(maxStickLength)}.`;
+      }
       if (result.unstable) return UNSTABLE_MSG;
       if (loadId == null) return NO_LOAD_MSG;
       return "Solved. Hover a stick to read its force. Positive is tension.";
@@ -667,11 +746,43 @@
     function readDimensions() {
       const bridge = Number(bridgeInput.value);
       const span = Number(spanInput.value);
+      const grid = Number(gridInput.value);
+      const stick = Number(stickInput.value);
       if (!Number.isFinite(bridge) || !Number.isFinite(span) || bridge <= 0 || span <= 0) {
         return { error: "Bridge length and span must be positive numbers." };
       }
       if (span > bridge) return { error: "Span is longer than the bridge length." };
-      return { bridge, span };
+      if (!Number.isFinite(grid) || grid <= 0) {
+        return { error: "Grid size must be a positive number." };
+      }
+      if (!Number.isFinite(stick) || stick <= 0) {
+        return { error: "Stick length must be a positive number." };
+      }
+      if (stick + 1e-9 < grid) {
+        return { error: "Stick length must be at least one grid step." };
+      }
+      return { bridge, span, grid, stick };
+    }
+
+    function markDimensionValidity(parsed) {
+      const bridge = Number(bridgeInput.value);
+      const span = Number(spanInput.value);
+      const grid = Number(gridInput.value);
+      const stick = Number(stickInput.value);
+      const bridgeBad = !Number.isFinite(bridge) || bridge <= 0;
+      const spanBad = !Number.isFinite(span) || span <= 0 || (Number.isFinite(bridge) && span > bridge);
+      const gridBad = !Number.isFinite(grid) || grid <= 0;
+      const stickBad = !Number.isFinite(stick) || stick <= 0 || (Number.isFinite(grid) && stick < grid);
+      bridgeInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && bridgeBad);
+      spanInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && spanBad);
+      gridInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && gridBad);
+      stickInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && stickBad);
+      if (!parsed.error) {
+        bridgeInput.removeAttribute("aria-invalid");
+        spanInput.removeAttribute("aria-invalid");
+        gridInput.removeAttribute("aria-invalid");
+        stickInput.removeAttribute("aria-invalid");
+      }
     }
 
     function applyDimensions() {
@@ -679,31 +790,44 @@
       if (parsed.error) {
         errorEl.hidden = false;
         errorEl.textContent = parsed.error;
-        const bridge = Number(bridgeInput.value);
-        const span = Number(spanInput.value);
-        const bridgeBad = !Number.isFinite(bridge) || bridge <= 0;
-        const spanBad = !Number.isFinite(span) || span <= 0 || (Number.isFinite(bridge) && span > bridge);
-        bridgeInput.toggleAttribute("aria-invalid", bridgeBad);
-        spanInput.toggleAttribute("aria-invalid", spanBad);
+        markDimensionValidity(parsed);
         return;
       }
       errorEl.hidden = true;
       errorEl.textContent = "";
-      bridgeInput.removeAttribute("aria-invalid");
-      spanInput.removeAttribute("aria-invalid");
-      if (Math.abs(parsed.bridge - bridgeLength) < 1e-12 && Math.abs(parsed.span - spanLength) < 1e-12) return;
-      const scale = parsed.bridge / bridgeLength;
-      if (Math.abs(scale - 1) > 1e-12) {
-        for (const node of nodes) {
-          if (node.role) continue;
-          node.x *= scale;
-          node.y *= scale;
+      markDimensionValidity(parsed);
+      const bridgeChanged = Math.abs(parsed.bridge - bridgeLength) > 1e-12;
+      const spanChanged = Math.abs(parsed.span - spanLength) > 1e-12;
+      const gridChanged = Math.abs(parsed.grid - gridSize) > 1e-12;
+      const stickChanged = Math.abs(parsed.stick - maxStickLength) > 1e-12;
+      if (!bridgeChanged && !spanChanged && !gridChanged && !stickChanged) return;
+      if (bridgeChanged) {
+        const scale = parsed.bridge / bridgeLength;
+        if (Math.abs(scale - 1) > 1e-12) {
+          for (const node of nodes) {
+            if (node.role) continue;
+            node.x *= scale;
+            node.y *= scale;
+          }
         }
       }
       bridgeLength = parsed.bridge;
       spanLength = parsed.span;
+      gridSize = parsed.grid;
+      maxStickLength = parsed.stick;
       note = "";
       positionSupports();
+      if (bridgeChanged || gridChanged) resnapFreeJoints();
+      if (stickChanged || bridgeChanged || gridChanged) {
+        for (const member of members) {
+          const a = nodeById(member.i);
+          const b = nodeById(member.j);
+          if (a && b && stickTooLong(memberLength(a, b))) {
+            note = `Some sticks exceed ${formatInches(maxStickLength)}. Shorten them or raise stick length.`;
+            break;
+          }
+        }
+      }
       refresh();
     }
 
@@ -712,14 +836,22 @@
       inputTimer = setTimeout(applyDimensions, 300);
     }
 
+    function modeCursor() {
+      if (mode === "joint" || mode === "stick") return "crosshair";
+      if (mode === "move") return dragId != null ? "grabbing" : "grab";
+      return "pointer";
+    }
+
     function setMode(next) {
       mode = next;
       stickStart = null;
+      dragId = null;
+      dragMoved = false;
       note = "";
       for (const button of modeButtons) {
         button.setAttribute("aria-pressed", button.dataset.mode === mode ? "true" : "false");
       }
-      canvas.style.cursor = mode === "joint" || mode === "stick" ? "crosshair" : "pointer";
+      canvas.style.cursor = modeCursor();
       renderStatus();
       draw();
     }
@@ -824,16 +956,17 @@
     }
 
     function addJoint(world) {
-      const existing = nearestJoint(world, snapRadius());
+      const snapped = snapPoint(world.x, world.y);
+      const existing = jointAtPoint(snapped.x, snapped.y) || nearestJoint(snapped, snapRadius() * 0.35);
       if (existing) {
-        note = existing.role ? "Snapped to the support joint." : "That joint is already there.";
+        note = existing.role ? "That grid point is a support." : "That joint is already there.";
         renderStatus();
         return;
       }
       nodes.push({
         id: nextId++,
-        x: world.x,
-        y: world.y,
+        x: snapped.x,
+        y: snapped.y,
         label: indexToLetters(nextLetter++),
       });
       note = "";
@@ -843,7 +976,7 @@
     function addStick(joint) {
       if (!stickStart) {
         stickStart = joint.id;
-        note = "Click a second joint to place the stick.";
+        note = `Click a second joint within ${formatInches(maxStickLength)}.`;
         renderStatus();
         draw();
         return;
@@ -857,11 +990,72 @@
         return;
       }
       const a = nodeById(stickStart);
-      if (Math.hypot(a.x - joint.x, a.y - joint.y) < 1e-9) return;
+      const length = memberLength(a, joint);
+      if (length < 1e-9) return;
+      if (stickTooLong(length)) {
+        note = `Stick would be ${formatInches(length)}; max is ${formatInches(maxStickLength)}.`;
+        stickStart = null;
+        renderStatus();
+        draw();
+        return;
+      }
       members.push({ id: nextId++, i: stickStart, j: joint.id });
       stickStart = null;
       note = "";
       refresh();
+    }
+
+    function beginMove(joint, pointerId) {
+      if (joint.role) {
+        note = "Supports stay with the span.";
+        renderStatus();
+        return false;
+      }
+      dragId = joint.id;
+      dragMoved = false;
+      if (pointerId != null && canvas.setPointerCapture) {
+        try { canvas.setPointerCapture(pointerId); } catch (_) { /* ignore */ }
+      }
+      canvas.style.cursor = "grabbing";
+      note = "Drag to a grid point. Connected sticks cannot exceed stick length.";
+      renderStatus();
+      return true;
+    }
+
+    function moveDragTo(world) {
+      if (dragId == null) return;
+      const node = nodeById(dragId);
+      if (!node || node.role) return;
+      const snapped = snapPoint(world.x, world.y);
+      if (nearlyEqual(node.x, snapped.x) && nearlyEqual(node.y, snapped.y)) return;
+      if (jointAtPoint(snapped.x, snapped.y, node.id)) {
+        note = "Another joint is already on that grid point.";
+        renderStatus();
+        return;
+      }
+      const overflow = connectedStickOverflow(node.id, snapped.x, snapped.y);
+      if (overflow) {
+        note = `${overflow.name} would be ${formatInches(overflow.length)}; max is ${formatInches(maxStickLength)}.`;
+        renderStatus();
+        return;
+      }
+      node.x = snapped.x;
+      node.y = snapped.y;
+      dragMoved = true;
+      note = "";
+      refresh();
+    }
+
+    function endMove() {
+      if (dragId == null) return;
+      dragId = null;
+      canvas.style.cursor = modeCursor();
+      if (!dragMoved) {
+        note = "Drag a free joint to move it on the grid.";
+        renderStatus();
+      }
+      dragMoved = false;
+      draw();
     }
 
     function setLoad(joint) {
@@ -902,6 +1096,15 @@
         return;
       }
       const joint = nearestJoint(world, snapRadius());
+      if (mode === "move") {
+        if (!joint) {
+          note = "Click and drag a free joint.";
+          renderStatus();
+          return;
+        }
+        beginMove(joint, event.pointerId);
+        return;
+      }
       if (mode === "stick") {
         if (!joint) {
           stickStart = null;
@@ -925,7 +1128,7 @@
       if (mode === "delete") deleteAt(event.offsetX, event.offsetY, world);
     }
 
-    function onPointerMove(event) {
+    function updateMemberTooltip(event) {
       const member = memberAt(event.offsetX, event.offsetY);
       const id = member ? member.id : null;
       if (id !== hoverId) {
@@ -937,7 +1140,11 @@
         return;
       }
       const style = memberStyle(member);
+      const a = nodeById(member.i);
+      const b = nodeById(member.j);
+      const length = a && b ? memberLength(a, b) : null;
       let text = `${memberName(member)} · `;
+      if (length != null) text += `${formatInches(length)} · `;
       if (result.unstable) text += "unstable";
       else if (loadId == null) text += "no load yet";
       else text += style.text;
@@ -954,6 +1161,72 @@
       y = Math.max(8, Math.min(boundsH - height - 8, y));
       tooltipEl.style.left = `${x}px`;
       tooltipEl.style.top = `${y}px`;
+    }
+
+    function onPointerMove(event) {
+      if (dragId != null) {
+        tooltipEl.hidden = true;
+        moveDragTo(screenToWorld(event.offsetX, event.offsetY));
+        return;
+      }
+      updateMemberTooltip(event);
+    }
+
+    function onPointerUp() {
+      if (dragId != null) endMove();
+    }
+
+    function drawGrid() {
+      if (!(gridSize > 0) || !view) return;
+      const width = canvas.clientWidth || 1;
+      const height = canvas.clientHeight || 1;
+      const topLeft = screenToWorld(0, 0);
+      const bottomRight = screenToWorld(width, height);
+      const worldLeft = Math.min(topLeft.x, bottomRight.x) - gridSize;
+      const worldRight = Math.max(topLeft.x, bottomRight.x) + gridSize;
+      const worldBottom = Math.min(topLeft.y, bottomRight.y) - gridSize;
+      const worldTop = Math.max(topLeft.y, bottomRight.y) + gridSize;
+      const startX = Math.floor(worldLeft / gridSize) * gridSize;
+      const startY = Math.floor(worldBottom / gridSize) * gridSize;
+      const maxLines = 400;
+      let count = 0;
+      ctx.save();
+      ctx.strokeStyle = "rgba(183, 168, 148, 0.45)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+      for (let x = startX; x <= worldRight + 1e-9 && count < maxLines; x += gridSize, count++) {
+        const a = worldToScreen(x, worldBottom);
+        const b = worldToScreen(x, worldTop);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+      for (let y = startY; y <= worldTop + 1e-9 && count < maxLines; y += gridSize, count++) {
+        const a = worldToScreen(worldLeft, y);
+        const b = worldToScreen(worldRight, y);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawStickReach() {
+      if (mode !== "stick" || stickStart == null || !view) return;
+      const start = nodeById(stickStart);
+      if (!start) return;
+      const center = worldToScreen(start.x, start.y);
+      const radius = maxStickLength * view.scale;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(28, 79, 138, 0.35)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 5]);
+      ctx.stroke();
+      ctx.restore();
     }
 
     function drawDeck() {
@@ -1049,7 +1322,7 @@
 
     function drawJoint(node) {
       const p = worldToScreen(node.x, node.y);
-      if (stickStart === node.id) {
+      if (stickStart === node.id || dragId === node.id) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
         ctx.strokeStyle = color.load;
@@ -1176,7 +1449,9 @@
       ctx.fillRect(0, 0, width, height);
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
+      drawGrid();
       drawDeck();
+      drawStickReach();
 
       for (const member of members) {
         const style = memberStyle(member);
@@ -1231,23 +1506,21 @@
       members = [];
       loadId = null;
       stickStart = null;
+      dragId = null;
+      dragMoved = false;
       hoverId = null;
       note = "";
       nextLetter = 2;
       tooltipEl.hidden = true;
+      canvas.style.cursor = modeCursor();
       refresh();
     });
-    bridgeInput.addEventListener("input", scheduleApply);
-    spanInput.addEventListener("input", scheduleApply);
-    bridgeInput.addEventListener("change", () => {
-      clearTimeout(inputTimer);
-      applyDimensions();
-    });
-    spanInput.addEventListener("change", () => {
-      clearTimeout(inputTimer);
-      applyDimensions();
-    });
-    for (const input of [bridgeInput, spanInput]) {
+    for (const input of [bridgeInput, spanInput, gridInput, stickInput]) {
+      input.addEventListener("input", scheduleApply);
+      input.addEventListener("change", () => {
+        clearTimeout(inputTimer);
+        applyDimensions();
+      });
       input.addEventListener("keydown", (event) => {
         if (event.key !== "Enter") return;
         event.preventDefault();
@@ -1257,7 +1530,10 @@
     }
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("pointercancel", onPointerUp);
     canvas.addEventListener("pointerleave", () => {
+      if (dragId != null) return;
       hoverId = null;
       tooltipEl.hidden = true;
       draw();
@@ -1274,6 +1550,8 @@
         return {
           bridgeLength,
           spanLength,
+          gridSize,
+          maxStickLength,
           nodes: nodes.map((node) => ({
             id: node.id,
             x: node.x,
@@ -1286,6 +1564,11 @@
             i: member.i,
             j: member.j,
             name: memberName(member),
+            length: (() => {
+              const a = nodeById(member.i);
+              const b = nodeById(member.j);
+              return a && b ? memberLength(a, b) : null;
+            })(),
             force: result.forces ? result.forces.get(member.id) : null,
           })),
           unstable: result.unstable,
@@ -1300,6 +1583,7 @@
         ensureView();
         return worldToScreen(x, y);
       },
+      snapPoint,
       analyzeModel,
     };
   </script>
