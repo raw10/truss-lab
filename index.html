@@ -333,14 +333,13 @@
 <body>
   <header>
     <h1>Popsicle Bridge</h1>
-    <p>Pin-jointed sticks. Pinch with two fingers to zoom; joints stay the same screen size.</p>
+    <p>Stick-first truss lab. Place sticks, rotate ends to snap, pinch to zoom.</p>
   </header>
 
   <div class="toolbar">
     <div class="modes">
-      <button type="button" data-mode="joint" aria-pressed="true">Add joint</button>
-      <button type="button" data-mode="stick" aria-pressed="false">Add stick</button>
-      <button type="button" data-mode="move" aria-pressed="false">Move</button>
+      <button type="button" data-mode="stick" aria-pressed="true">Add stick</button>
+      <button type="button" data-mode="move" aria-pressed="false">Move end</button>
       <button type="button" data-mode="load" aria-pressed="false">Set load</button>
       <button type="button" data-mode="delete" aria-pressed="false">Delete</button>
       <button type="button" id="fit-view">Fit</button>
@@ -383,8 +382,8 @@
 
   <div class="workspace">
     <div class="stage">
-      <canvas id="canvas" aria-label="Bridge drawing. Place joints on the grid, connect sticks into the two supports, then set the load."></canvas>
-      <p id="empty" class="empty">Place joints on the grid, connect sticks into the two supports, then set the load.</p>
+      <canvas id="canvas" aria-label="Bridge drawing. Place sticks, rotate ends, set the load."></canvas>
+      <p id="empty" class="empty">Add a stick from the supports, then rotate ends. Ends snap to the grid or stick crossings.</p>
       <div id="tooltip" class="tooltip" hidden></div>
     </div>
     <aside class="results" aria-label="Analysis and bridge parameters">
@@ -410,1740 +409,1970 @@
   </div>
 
   <script>
-    const UNSTABLE_MSG = "The bridge is unstable and needs more sticks or a joint tied into both supports.";
-    const NO_LOAD_MSG = "No load yet. Choose Set load and click a joint.";
-    const MIN_WIDTH = 3;
-    const MAX_WIDTH = 16;
-    const NEAR_ZERO = 1e-3;
-    const STORAGE_KEY = "truss-lab:v1";
-    const DISPLACEMENT_LIMIT = 1e9;
-    const JOINT_DRAW_PX = 7;
-    const JOINT_HALO_PX = 14;
-    const JOINT_HIT_PX = 30;
-    const MIN_VIEW_SCALE = 4;
-    const MAX_VIEW_SCALE = 400;
+(() => {
+  const UNSTABLE_MSG = "The bridge is unstable and needs more sticks or a joint tied into both supports.";
+  const NO_LOAD_MSG = "No load yet. Choose Set load and click a joint.";
+  const MIN_WIDTH = 3;
+  const MAX_WIDTH = 16;
+  const NEAR_ZERO = 1e-3;
+  const STORAGE_KEY = "truss-lab:v2";
+  const STORAGE_KEY_LEGACY = "truss-lab:v1";
+  const DISPLACEMENT_LIMIT = 1e9;
+  const JOINT_DRAW_PX = 7;
+  const JOINT_HALO_PX = 14;
+  const JOINT_HIT_PX = 30;
+  const END_HIT_PX = 34;
+  const SNAP_PX = 22;
+  const MIN_VIEW_SCALE = 4;
+  const MAX_VIEW_SCALE = 400;
+  const MIN_STICK = 1e-3;
 
-    const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d");
-    const emptyEl = document.getElementById("empty");
-    const tooltipEl = document.getElementById("tooltip");
-    const statusEl = document.getElementById("status");
-    const errorEl = document.getElementById("form-error");
-    const blurbEl = document.getElementById("force-blurb");
-    const listEl = document.getElementById("force-list");
-    const paramsEl = document.getElementById("params");
-    const bridgeInput = document.getElementById("bridge-length");
-    const spanInput = document.getElementById("span-length");
-    const gridInput = document.getElementById("grid-size");
-    const stickInput = document.getElementById("stick-length");
-    const modeButtons = [...document.querySelectorAll("[data-mode]")];
-    let paramsFocused = false;
-    let persistTimer = 0;
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
+  const emptyEl = document.getElementById("empty");
+  const tooltipEl = document.getElementById("tooltip");
+  const statusEl = document.getElementById("status");
+  const errorEl = document.getElementById("form-error");
+  const blurbEl = document.getElementById("force-blurb");
+  const listEl = document.getElementById("force-list");
+  const paramsEl = document.getElementById("params");
+  const bridgeInput = document.getElementById("bridge-length");
+  const spanInput = document.getElementById("span-length");
+  const gridInput = document.getElementById("grid-size");
+  const stickInput = document.getElementById("stick-length");
+  const modeButtons = [...document.querySelectorAll("[data-mode]")];
+  let paramsFocused = false;
 
-    const color = {
-      tension: cssVar("--tension", "#148f45"),
-      compression: cssVar("--compression", "#d12d28"),
-      tan: cssVar("--tan", "#c6a36e"),
-      ink: cssVar("--ink", "#2a241c"),
-      paper: cssVar("--paper", "#fffaf3"),
-      load: cssVar("--load", "#1c4f8a"),
-      muted: cssVar("--muted", "#6f6558"),
+  const color = {
+    tension: cssVar("--tension", "#148f45"),
+    compression: cssVar("--compression", "#d12d28"),
+    tan: cssVar("--tan", "#c6a36e"),
+    ink: cssVar("--ink", "#2a241c"),
+    paper: cssVar("--paper", "#fffaf3"),
+    load: cssVar("--load", "#1c4f8a"),
+    muted: cssVar("--muted", "#6f6558"),
+  };
+
+  let bridgeLength = 10;
+  let spanLength = 8;
+  let gridSize = 0.5;
+  let maxStickLength = 4.5;
+  let nextId = 1;
+  let nextLetter = 2;
+  let nodes = [];
+  let members = [];
+  let loadId = null;
+  let mode = "stick";
+  let placeStart = null;
+  let placePreview = null;
+  let hoverId = null;
+  let dragEnd = null;
+  let dragMoved = false;
+  let note = "";
+  let result = { unstable: true, forces: null, reason: "", diagnostics: null };
+  let view = null;
+  let camera = { scale: 40, cx: 5, cy: 2.75, fitted: false };
+  const activePointers = new Map();
+  let pinch = null;
+  let inputTimer = 0;
+
+  function cssVar(name, fallback) {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+  }
+
+  function indexToLetters(index) {
+    let n = index + 1;
+    let s = "";
+    while (n > 0) {
+      n -= 1;
+      s = String.fromCharCode(65 + (n % 26)) + s;
+      n = Math.floor(n / 26);
+    }
+    return s;
+  }
+
+  function nodeById(id) {
+    return nodes.find((node) => node.id === id) || null;
+  }
+
+  function memberById(id) {
+    return members.find((member) => member.id === id) || null;
+  }
+
+  function isEmpty() {
+    return members.length === 0 && nodes.every((node) => node.role);
+  }
+
+  function snapCoord(value) {
+    if (!(gridSize > 0)) return value;
+    return Math.round(value / gridSize) * gridSize;
+  }
+
+  function snapPoint(x, y) {
+    return { x: snapCoord(x), y: snapCoord(y) };
+  }
+
+  function nearlyEqual(a, b, eps = 1e-9) {
+    return Math.abs(a - b) < eps;
+  }
+
+  function pointsEqual(a, b, eps = 1e-7) {
+    return nearlyEqual(a.x, b.x, eps) && nearlyEqual(a.y, b.y, eps);
+  }
+
+  function dist(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  function jointAtPoint(x, y, exceptId, eps = 1e-7) {
+    return nodes.find((node) =>
+      node.id !== exceptId && nearlyEqual(node.x, x, eps) && nearlyEqual(node.y, y, eps)
+    ) || null;
+  }
+
+  function memberLength(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  function formatInches(value) {
+    const rounded = Math.round(value * 1000) / 1000;
+    return `${rounded}"`;
+  }
+
+  function memberName(member) {
+    const a = nodeById(member.i).label;
+    const b = nodeById(member.j).label;
+    return a < b ? a + b : b + a;
+  }
+
+  function findMember(a, b) {
+    return members.find((member) =>
+      (member.i === a && member.j === b) || (member.i === b && member.j === a)
+    );
+  }
+
+  function otherEnd(member, nodeId) {
+    return member.i === nodeId ? member.j : member.i;
+  }
+
+  function degreeOf(nodeId) {
+    return members.reduce((n, member) => n + (member.i === nodeId || member.j === nodeId ? 1 : 0), 0);
+  }
+
+  function positionSupports() {
+    const overhang = (bridgeLength - spanLength) / 2;
+    const pin = nodes.find((node) => node.role === "pin");
+    const roller = nodes.find((node) => node.role === "roller");
+    pin.x = overhang;
+    pin.y = 0;
+    roller.x = overhang + spanLength;
+    roller.y = 0;
+  }
+
+  function resetModel() {
+    nextId = 1;
+    nextLetter = 2;
+    nodes = [
+      { id: nextId++, x: 0, y: 0, role: "pin", label: "A" },
+      { id: nextId++, x: 0, y: 0, role: "roller", label: "B" },
+    ];
+    members = [];
+    loadId = null;
+    placeStart = null;
+    placePreview = null;
+    dragEnd = null;
+    hoverId = null;
+    note = "";
+    positionSupports();
+  }
+
+  function clampToLength(pivot, point, maxLen) {
+    const d = dist(pivot, point);
+    if (d <= maxLen || d < 1e-12) return { x: point.x, y: point.y };
+    const s = maxLen / d;
+    return {
+      x: pivot.x + (point.x - pivot.x) * s,
+      y: pivot.y + (point.y - pivot.y) * s,
+    };
+  }
+
+  function closestPointOnSegment(p, a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-18) return { x: a.x, y: a.y, t: 0 };
+    let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    return { x: a.x + t * dx, y: a.y + t * dy, t };
+  }
+
+  function segmentIntersection(a, b, c, d) {
+    const den = (a.x - b.x) * (c.y - d.y) - (a.y - b.y) * (c.x - d.x);
+    if (Math.abs(den) < 1e-12) return null;
+    const t = ((a.x - c.x) * (c.y - d.y) - (a.y - c.y) * (c.x - d.x)) / den;
+    const u = -((a.x - b.x) * (a.y - c.y) - (a.y - b.y) * (a.x - c.x)) / den;
+    const eps = 1e-6;
+    if (t <= eps || t >= 1 - eps || u <= eps || u >= 1 - eps) return null;
+    return { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y), t, u };
+  }
+
+  function areColinearOpposite(joint, farA, farB) {
+    const ax = farA.x - joint.x;
+    const ay = farA.y - joint.y;
+    const bx = farB.x - joint.x;
+    const by = farB.y - joint.y;
+    const cross = ax * by - ay * bx;
+    const dot = ax * bx + ay * by;
+    const scale = Math.max(Math.hypot(ax, ay), Math.hypot(bx, by), 1e-9);
+    return Math.abs(cross) < 1e-6 * scale * scale && dot < 0;
+  }
+
+  function ensureJoint(x, y, labelHint) {
+    const existing = jointAtPoint(x, y);
+    if (existing) return existing;
+    const near = nearestJoint({ x, y }, Math.max(1e-6, (SNAP_PX * 0.25) / Math.max(camera.scale, 1)));
+    if (near && !near.role && pointsEqual(near, { x, y }, 1e-5)) return near;
+    const node = {
+      id: nextId++,
+      x,
+      y,
+      label: labelHint || indexToLetters(nextLetter++),
+    };
+    nodes.push(node);
+    return node;
+  }
+
+  function pruneOrphanJoints() {
+    const used = new Set();
+    for (const member of members) {
+      used.add(member.i);
+      used.add(member.j);
+    }
+    nodes = nodes.filter((node) => node.role || used.has(node.id) || node.id === loadId);
+  }
+
+  function splitMemberAt(member, point) {
+    const a = nodeById(member.i);
+    const b = nodeById(member.j);
+    if (!a || !b) return null;
+    if (pointsEqual(point, a) || pointsEqual(point, b)) return null;
+    const onSeg = closestPointOnSegment(point, a, b);
+    if (dist(onSeg, point) > 1e-5) return null;
+    if (onSeg.t <= 1e-6 || onSeg.t >= 1 - 1e-6) return null;
+    const joint = ensureJoint(point.x, point.y);
+    if (joint.id === member.i || joint.id === member.j) return joint;
+    members = members.filter((item) => item.id !== member.id);
+    members.push({ id: nextId++, i: member.i, j: joint.id });
+    members.push({ id: nextId++, i: joint.id, j: member.j });
+    return joint;
+  }
+
+  function resolveIntersections(limit = 80) {
+    let guard = 0;
+    while (guard++ < limit) {
+      let found = null;
+      outer: for (let i = 0; i < members.length; i++) {
+        for (let j = i + 1; j < members.length; j++) {
+          const m1 = members[i];
+          const m2 = members[j];
+          if (m1.i === m2.i || m1.i === m2.j || m1.j === m2.i || m1.j === m2.j) continue;
+          const a = nodeById(m1.i);
+          const b = nodeById(m1.j);
+          const c = nodeById(m2.i);
+          const d = nodeById(m2.j);
+          if (!a || !b || !c || !d) continue;
+          const hit = segmentIntersection(a, b, c, d);
+          if (!hit) continue;
+          found = { m1, m2, hit };
+          break outer;
+        }
+      }
+      if (!found) break;
+      splitMemberAt(found.m1, found.hit);
+      const m2now = members.find((m) =>
+        (m.i === found.m2.i && m.j === found.m2.j) || (m.i === found.m2.j && m.j === found.m2.i)
+      ) || members.find((m) => {
+        const p = found.hit;
+        const x = nodeById(m.i);
+        const y = nodeById(m.j);
+        if (!x || !y) return false;
+        const c = closestPointOnSegment(p, x, y);
+        return dist(c, p) < 1e-5 && c.t > 1e-6 && c.t < 1 - 1e-6;
+      });
+      if (m2now) splitMemberAt(m2now, found.hit);
+    }
+    pruneOrphanJoints();
+  }
+
+  function mergeJointAway(joint) {
+    const incident = members.filter((member) => member.i === joint.id || member.j === joint.id);
+    if (incident.length < 2) return false;
+    const used = new Set();
+    const merged = [];
+    for (let i = 0; i < incident.length; i++) {
+      if (used.has(incident[i].id)) continue;
+      const m1 = incident[i];
+      const far1 = nodeById(otherEnd(m1, joint.id));
+      let paired = null;
+      for (let j = i + 1; j < incident.length; j++) {
+        if (used.has(incident[j].id)) continue;
+        const m2 = incident[j];
+        const far2 = nodeById(otherEnd(m2, joint.id));
+        if (!far1 || !far2) continue;
+        if (!areColinearOpposite(joint, far1, far2)) continue;
+        const len = dist(far1, far2);
+        if (len > maxStickLength + 1e-9) continue;
+        if (findMember(far1.id, far2.id)) continue;
+        paired = { m2, far1, far2 };
+        break;
+      }
+      if (!paired) return false;
+      used.add(m1.id);
+      used.add(paired.m2.id);
+      merged.push({ id: nextId++, i: paired.far1.id, j: paired.far2.id });
+    }
+    if (used.size !== incident.length) return false;
+    members = members.filter((member) => !used.has(member.id)).concat(merged);
+    nodes = nodes.filter((node) => node.id !== joint.id);
+    if (loadId === joint.id) loadId = null;
+    return true;
+  }
+
+  function pickEndpoint(raw, pivot, excludeMemberIds = []) {
+    ensureView();
+    const preferred = clampToLength(pivot, raw, maxStickLength);
+    const snapWorld = SNAP_PX / view.scale;
+    const candidates = [];
+
+    const push = (point, kind) => {
+      if (!point) return;
+      if (dist(pivot, point) > maxStickLength + 1e-8) return;
+      if (dist(pivot, point) < MIN_STICK && kind !== "self") return;
+      candidates.push({ x: point.x, y: point.y, kind });
     };
 
-    let bridgeLength = 10;
-    let spanLength = 8;
-    let gridSize = 0.5;
-    let maxStickLength = 4.5;
-    let nextId = 1;
-    let nextLetter = 2;
-    let nodes = [];
-    let members = [];
-    let loadId = null;
-    let mode = "joint";
-    let stickStart = null;
-    let hoverId = null;
-    let dragId = null;
-    let dragMoved = false;
-    let note = "";
-    let result = { unstable: true, forces: null, reason: "", diagnostics: null };
-    let view = null;
-    let camera = { scale: 40, cx: 5, cy: 2.75, fitted: false };
-    const activePointers = new Map();
-    let pinch = null;
-    let inputTimer = 0;
-
-    function cssVar(name, fallback) {
-      const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-      return value || fallback;
-    }
-
-    function indexToLetters(index) {
-      let n = index + 1;
-      let s = "";
-      while (n > 0) {
-        n -= 1;
-        s = String.fromCharCode(65 + (n % 26)) + s;
-        n = Math.floor(n / 26);
-      }
-      return s;
-    }
-
-    function nodeById(id) {
-      return nodes.find((node) => node.id === id) || null;
-    }
-
-    function isEmpty() {
-      return members.length === 0 && nodes.every((node) => node.role);
-    }
-
-    function snapCoord(value) {
-      if (!(gridSize > 0)) return value;
-      return Math.round(value / gridSize) * gridSize;
-    }
-
-    function snapPoint(x, y) {
-      return { x: snapCoord(x), y: snapCoord(y) };
-    }
-
-    function nearlyEqual(a, b) {
-      return Math.abs(a - b) < 1e-9;
-    }
-
-    function jointAtPoint(x, y, exceptId) {
-      return nodes.find((node) =>
-        node.id !== exceptId && nearlyEqual(node.x, x) && nearlyEqual(node.y, y)
-      ) || null;
-    }
-
-    function memberLength(a, b) {
-      return Math.hypot(a.x - b.x, a.y - b.y);
-    }
-
-    function stickTooLong(length) {
-      return length > maxStickLength + 1e-9;
-    }
-
-    function formatInches(value) {
-      const rounded = Math.round(value * 1000) / 1000;
-      return `${rounded}"`;
-    }
-
-    function connectedStickOverflow(nodeId, x, y) {
-      const trial = { x, y };
-      for (const member of members) {
-        if (member.i !== nodeId && member.j !== nodeId) continue;
-        const otherId = member.i === nodeId ? member.j : member.i;
-        const other = nodeById(otherId);
-        if (!other) continue;
-        const length = memberLength(trial, other);
-        if (stickTooLong(length)) {
-          return { name: memberName(member), length };
-        }
-      }
-      return null;
-    }
-
-    function positionSupports() {
-      const overhang = (bridgeLength - spanLength) / 2;
-      const pin = nodes.find((node) => node.role === "pin");
-      const roller = nodes.find((node) => node.role === "roller");
-      pin.x = overhang;
-      pin.y = 0;
-      roller.x = overhang + spanLength;
-      roller.y = 0;
-    }
-
-    function resnapFreeJoints() {
-      for (const node of nodes) {
-        if (node.role) continue;
-        const snapped = snapPoint(node.x, node.y);
-        node.x = snapped.x;
-        node.y = snapped.y;
+    push(snapPoint(preferred.x, preferred.y), "grid");
+    for (let gx = -1; gx <= 1; gx++) {
+      for (let gy = -1; gy <= 1; gy++) {
+        push({
+          x: snapCoord(preferred.x) + gx * gridSize,
+          y: snapCoord(preferred.y) + gy * gridSize,
+        }, "grid");
       }
     }
 
-    function resetModel() {
-      nextId = 1;
-      nextLetter = 2;
-      nodes = [
-        { id: nextId++, x: 0, y: 0, role: "pin", label: "A" },
-        { id: nextId++, x: 0, y: 0, role: "roller", label: "B" },
+    for (const node of nodes) {
+      push(node, "joint");
+    }
+
+    const dirLen = dist(pivot, preferred) || 1;
+    const far = {
+      x: pivot.x + ((preferred.x - pivot.x) / dirLen) * maxStickLength,
+      y: pivot.y + ((preferred.y - pivot.y) / dirLen) * maxStickLength,
+    };
+
+    for (const member of members) {
+      if (excludeMemberIds.includes(member.id)) continue;
+      const a = nodeById(member.i);
+      const b = nodeById(member.j);
+      if (!a || !b) continue;
+      const hit = segmentIntersection(pivot, far, a, b);
+      if (hit) push(hit, "cross");
+      const close = closestPointOnSegment(preferred, a, b);
+      if (dist(close, preferred) <= snapWorld * 1.5) push(close, "cross");
+    }
+
+    let best = preferred;
+    let bestD = Infinity;
+    let bestKind = "free";
+    for (const candidate of candidates) {
+      const d = dist(candidate, preferred);
+      if (d < bestD) {
+        bestD = d;
+        best = candidate;
+        bestKind = candidate.kind;
+      }
+    }
+    if (bestD > snapWorld) {
+      return { x: preferred.x, y: preferred.y, kind: "free" };
+    }
+    return { x: best.x, y: best.y, kind: bestKind };
+  }
+
+  function diagnoseModel(modelNodes, modelMembers) {
+    const freeNodes = modelNodes.filter((node) => !node.role);
+    const pin = modelNodes.find((node) => node.role === "pin");
+    const roller = modelNodes.find((node) => node.role === "roller");
+    const degree = new Map(modelNodes.map((node) => [node.id, 0]));
+    for (const member of modelMembers) {
+      degree.set(member.i, (degree.get(member.i) || 0) + 1);
+      degree.set(member.j, (degree.get(member.j) || 0) + 1);
+    }
+    const isolated = modelNodes
+      .filter((node) => (degree.get(node.id) || 0) === 0 && !node.role)
+      .map((node) => node.label);
+    const adj = new Map(modelNodes.map((node) => [node.id, []]));
+    for (const member of modelMembers) {
+      adj.get(member.i).push(member.j);
+      adj.get(member.j).push(member.i);
+    }
+    const reachable = new Set();
+    const stack = [];
+    if (pin) stack.push(pin.id);
+    if (roller) stack.push(roller.id);
+    while (stack.length) {
+      const id = stack.pop();
+      if (reachable.has(id)) continue;
+      reachable.add(id);
+      for (const next of adj.get(id) || []) stack.push(next);
+    }
+    const disconnected = modelNodes
+      .filter((node) => !reachable.has(node.id))
+      .map((node) => node.label);
+    const joints = modelNodes.length;
+    const sticks = modelMembers.length;
+    const determinacy = sticks - (2 * joints - 3);
+    return {
+      joints,
+      freeJoints: freeNodes.length,
+      sticks,
+      determinacy,
+      isolated,
+      disconnected,
+      pin: pin ? { label: pin.label, x: pin.x, y: pin.y } : null,
+      roller: roller ? { label: roller.label, x: roller.x, y: roller.y } : null,
+    };
+  }
+
+  function solveSystem(matrix, vector) {
+    const n = vector.length;
+    if (n === 0) return [];
+    const A = matrix.map((row) => row.slice());
+    const b = vector.slice();
+    let scale = 0;
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) scale = Math.max(scale, Math.abs(A[r][c]));
+    }
+    const tol = 1e-10 * Math.max(scale, 1);
+    for (let i = 0; i < n; i++) {
+      let pivot = i;
+      for (let r = i + 1; r < n; r++) {
+        if (Math.abs(A[r][i]) > Math.abs(A[pivot][i])) pivot = r;
+      }
+      if (!Number.isFinite(A[pivot][i]) || Math.abs(A[pivot][i]) < tol) return null;
+      if (pivot !== i) {
+        const row = A[i];
+        A[i] = A[pivot];
+        A[pivot] = row;
+        const rhs = b[i];
+        b[i] = b[pivot];
+        b[pivot] = rhs;
+      }
+      const diag = A[i][i];
+      for (let r = i + 1; r < n; r++) {
+        const factor = A[r][i] / diag;
+        A[r][i] = 0;
+        for (let c = i + 1; c < n; c++) A[r][c] -= factor * A[i][c];
+        b[r] -= factor * b[i];
+      }
+    }
+    const x = Array(n);
+    for (let i = n - 1; i >= 0; i--) {
+      let sum = b[i];
+      for (let c = i + 1; c < n; c++) sum -= A[i][c] * x[c];
+      if (!Number.isFinite(A[i][i]) || Math.abs(A[i][i]) < tol) return null;
+      x[i] = sum / A[i][i];
+      if (!Number.isFinite(x[i])) return null;
+    }
+    return x;
+  }
+
+  function analyzeModel(modelNodes, modelMembers, modelLoadId) {
+    const diagnostics = diagnoseModel(modelNodes, modelMembers);
+    const activeIds = new Set();
+    for (const node of modelNodes) {
+      if (node.role) activeIds.add(node.id);
+    }
+    for (const member of modelMembers) {
+      activeIds.add(member.i);
+      activeIds.add(member.j);
+    }
+    const activeNodes = modelNodes.filter((node) => activeIds.has(node.id));
+    const activeDiagnostics = diagnoseModel(activeNodes, modelMembers);
+    diagnostics.activeJoints = activeNodes.length;
+    diagnostics.activeFreeJoints = activeNodes.filter((node) => !node.role).length;
+    diagnostics.activeDeterminacy = activeDiagnostics.determinacy;
+    diagnostics.activeDisconnected = activeDiagnostics.disconnected;
+
+    if (modelMembers.length === 0) {
+      return { unstable: true, forces: null, reason: "No sticks yet.", diagnostics };
+    }
+    if (activeDiagnostics.disconnected.length) {
+      return {
+        unstable: true,
+        forces: null,
+        reason: `Sticks do not tie these joints into the supports: ${activeDiagnostics.disconnected.join(", ")}.`,
+        diagnostics,
+      };
+    }
+
+    const count = activeNodes.length;
+    const index = new Map(activeNodes.map((node, i) => [node.id, i]));
+    const ndof = count * 2;
+    const K = Array.from({ length: ndof }, () => Array(ndof).fill(0));
+
+    for (const member of modelMembers) {
+      const ia = index.get(member.i);
+      const ib = index.get(member.j);
+      if (ia == null || ib == null) continue;
+      const a = activeNodes[ia];
+      const b = activeNodes[ib];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const length = Math.hypot(dx, dy);
+      if (length < 1e-9) continue;
+      const c = dx / length;
+      const s = dy / length;
+      const k = 1 / length;
+      const cc = c * c * k;
+      const ss = s * s * k;
+      const cs = c * s * k;
+      const dof = [ia * 2, ia * 2 + 1, ib * 2, ib * 2 + 1];
+      const ke = [
+        [cc, cs, -cc, -cs],
+        [cs, ss, -cs, -ss],
+        [-cc, -cs, cc, cs],
+        [-cs, -ss, cs, ss],
       ];
-      members = [];
-      loadId = null;
-      stickStart = null;
-      hoverId = null;
-      note = "";
-      positionSupports();
+      for (let r = 0; r < 4; r++) {
+        for (let c2 = 0; c2 < 4; c2++) K[dof[r]][dof[c2]] += ke[r][c2];
+      }
     }
 
-    function memberName(member) {
-      const a = nodeById(member.i).label;
-      const b = nodeById(member.j).label;
-      return a < b ? a + b : b + a;
+    const fixed = Array(ndof).fill(false);
+    activeNodes.forEach((node, i) => {
+      if (node.role === "pin") {
+        fixed[i * 2] = true;
+        fixed[i * 2 + 1] = true;
+      } else if (node.role === "roller") {
+        fixed[i * 2 + 1] = true;
+      }
+    });
+
+    const free = [];
+    for (let i = 0; i < ndof; i++) if (!fixed[i]) free.push(i);
+    diagnostics.freeDofs = free.length;
+    diagnostics.fixedDofs = fixed.filter(Boolean).length;
+
+    const F = Array(ndof).fill(0);
+    if (modelLoadId != null) {
+      const li = index.get(modelLoadId);
+      if (li != null) F[li * 2 + 1] = -1;
     }
 
-    function findMember(a, b) {
-      return members.find((member) =>
-        (member.i === a && member.j === b) || (member.i === b && member.j === a)
-      );
+    const reducedK = free.map((row) => free.map((col) => K[row][col]));
+    const reducedF = free.map((dof) => F[dof]);
+    const solved = solveSystem(reducedK, reducedF);
+    if (!solved) {
+      let reason = "Stiffness matrix is singular (mechanism or missing triangulation).";
+      if (activeDiagnostics.determinacy < 0) {
+        reason += ` Short ${-activeDiagnostics.determinacy} stick(s) for a simple plane truss (m = 2j − 3 on active joints).`;
+      }
+      return { unstable: true, forces: null, reason, diagnostics };
     }
 
-    function diagnoseModel(modelNodes, modelMembers) {
-      const freeNodes = modelNodes.filter((node) => !node.role);
-      const pin = modelNodes.find((node) => node.role === "pin");
-      const roller = modelNodes.find((node) => node.role === "roller");
-      const degree = new Map(modelNodes.map((node) => [node.id, 0]));
-      for (const member of modelMembers) {
-        degree.set(member.i, (degree.get(member.i) || 0) + 1);
-        degree.set(member.j, (degree.get(member.j) || 0) + 1);
-      }
-      const isolated = modelNodes
-        .filter((node) => (degree.get(node.id) || 0) === 0 && !node.role)
-        .map((node) => node.label);
-      const adj = new Map(modelNodes.map((node) => [node.id, []]));
-      for (const member of modelMembers) {
-        adj.get(member.i).push(member.j);
-        adj.get(member.j).push(member.i);
-      }
-      const reachable = new Set();
-      const stack = [];
-      if (pin) stack.push(pin.id);
-      if (roller) stack.push(roller.id);
-      while (stack.length) {
-        const id = stack.pop();
-        if (reachable.has(id)) continue;
-        reachable.add(id);
-        for (const next of adj.get(id) || []) stack.push(next);
-      }
-      const disconnected = modelNodes
-        .filter((node) => !reachable.has(node.id))
-        .map((node) => node.label);
-      const joints = modelNodes.length;
-      const sticks = modelMembers.length;
-      // Plane truss: statically determinate when m = 2j - 3 with typical supports.
-      const determinacy = sticks - (2 * joints - 3);
+    const u = Array(ndof).fill(0);
+    free.forEach((dof, i) => { u[dof] = solved[i]; });
+    const maxU = u.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
+    diagnostics.maxDisplacement = maxU;
+    if (u.some((value) => !Number.isFinite(value) || Math.abs(value) > DISPLACEMENT_LIMIT)) {
       return {
-        joints,
-        freeJoints: freeNodes.length,
-        sticks,
-        determinacy,
-        isolated,
-        disconnected,
-        pin: pin ? { label: pin.label, x: pin.x, y: pin.y } : null,
-        roller: roller ? { label: roller.label, x: roller.x, y: roller.y } : null,
+        unstable: true,
+        forces: null,
+        reason: "Computed displacements blew up; the bridge is effectively unstable.",
+        diagnostics,
       };
     }
 
-    // Direct stiffness, 2D truss, EA = 1. y is upward.
-    // Positive axial force is tension: N = (EA/L) * elongation,
-    // where elongation projects (u_j - u_i) along the member from i to j.
-    // Orphan free joints (no sticks) are ignored so stray points do not
-    // make an otherwise sound truss look singular.
-    function analyzeModel(modelNodes, modelMembers, modelLoadId) {
-      const diagnostics = diagnoseModel(modelNodes, modelMembers);
-      const activeIds = new Set();
-      for (const node of modelNodes) {
-        if (node.role) activeIds.add(node.id);
+    const forces = new Map();
+    for (const member of modelMembers) {
+      const ia = index.get(member.i);
+      const ib = index.get(member.j);
+      const a = activeNodes[ia];
+      const b = activeNodes[ib];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const length = Math.hypot(dx, dy);
+      if (length < 1e-9) {
+        forces.set(member.id, 0);
+        continue;
       }
-      for (const member of modelMembers) {
-        activeIds.add(member.i);
-        activeIds.add(member.j);
-      }
-      const activeNodes = modelNodes.filter((node) => activeIds.has(node.id));
-      const activeDiagnostics = diagnoseModel(activeNodes, modelMembers);
-      diagnostics.activeJoints = activeNodes.length;
-      diagnostics.activeFreeJoints = activeNodes.filter((node) => !node.role).length;
-      diagnostics.activeDeterminacy = activeDiagnostics.determinacy;
-      diagnostics.activeDisconnected = activeDiagnostics.disconnected;
-
-      if (modelMembers.length === 0) {
+      const c = dx / length;
+      const s = dy / length;
+      const elongation = c * (u[ib * 2] - u[ia * 2]) + s * (u[ib * 2 + 1] - u[ia * 2 + 1]);
+      const axial = elongation / length;
+      if (!Number.isFinite(axial)) {
         return {
           unstable: true,
           forces: null,
-          reason: "No sticks yet.",
+          reason: "Non-finite member force; the bridge is effectively unstable.",
           diagnostics,
         };
       }
-      if (activeDiagnostics.disconnected.length) {
+      forces.set(member.id, axial);
+    }
+    return { unstable: false, forces, reason: "", diagnostics };
+  }
+
+  function solve() {
+    result = analyzeModel(nodes, members, loadId);
+  }
+
+  function showForces() {
+    return !result.unstable && loadId != null && result.forces != null;
+  }
+
+  function maxAbsForce() {
+    if (!showForces()) return 0;
+    let max = 0;
+    for (const value of result.forces.values()) max = Math.max(max, Math.abs(value));
+    return max;
+  }
+
+  function memberStyle(member) {
+    if (!showForces()) return { color: color.tan, width: 4.5, kind: "unloaded", text: "" };
+    const value = result.forces.get(member.id) || 0;
+    const magnitude = Math.abs(value);
+    if (magnitude < NEAR_ZERO) {
+      return { color: color.tan, width: MIN_WIDTH, kind: "unloaded", text: "0.00 unloaded", value };
+    }
+    const width = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, MAX_WIDTH * (magnitude / Math.max(maxAbsForce(), NEAR_ZERO))));
+    if (value > 0) {
+      return { color: color.tension, width, kind: "tension", text: `${value.toFixed(2)} tension`, value };
+    }
+    return { color: color.compression, width, kind: "compression", text: `${value.toFixed(2)} compression`, value };
+  }
+
+  function modelStatus() {
+    if (isEmpty()) {
+      return `Add sticks up to ${formatInches(maxStickLength)}. Ends snap to the ${formatInches(gridSize)} grid or crossings.`;
+    }
+    if (result.unstable) return result.reason || UNSTABLE_MSG;
+    if (loadId == null) return NO_LOAD_MSG;
+    return "Solved. Hover a stick to read its force. Positive is tension.";
+  }
+
+  function renderStatus() {
+    const text = note || modelStatus();
+    statusEl.textContent = text;
+    statusEl.classList.toggle("warning", !note && !isEmpty() && result.unstable);
+  }
+
+  function renderPanel() {
+    listEl.replaceChildren();
+    if (isEmpty()) {
+      blurbEl.textContent = "No sticks yet.";
+      return;
+    }
+    if (result.unstable) {
+      blurbEl.textContent = result.reason || "Not available while the bridge is unstable.";
+      return;
+    }
+    if (loadId == null) {
+      blurbEl.textContent = "No load yet.";
+      return;
+    }
+    const loaded = nodeById(loadId);
+    blurbEl.textContent = `Downward load 1 at ${loaded ? loaded.label : "a joint"}.`;
+    const rows = [...members].sort((a, b) => memberName(a).localeCompare(memberName(b)));
+    for (const member of rows) {
+      const style = memberStyle(member);
+      const row = document.createElement("div");
+      row.className = "force-row";
+      const swatch = document.createElement("i");
+      swatch.className = "swatch";
+      swatch.style.background = style.color;
+      const name = document.createElement("span");
+      name.textContent = memberName(member);
+      const value = document.createElement("span");
+      value.textContent = style.kind === "unloaded" ? "0.00" : style.value.toFixed(2);
+      const kind = document.createElement("span");
+      kind.className = "kind";
+      kind.textContent = style.kind;
+      row.append(swatch, name, value, kind);
+      listEl.append(row);
+    }
+  }
+
+  function roundNum(value) {
+    if (!Number.isFinite(value)) return value;
+    return Math.round(value * 1e9) / 1e9;
+  }
+
+  function buildSnapshot() {
+    const loadNode = loadId != null ? nodeById(loadId) : null;
+    return {
+      version: 2,
+      bridgeLength: roundNum(bridgeLength),
+      spanLength: roundNum(spanLength),
+      gridSize: roundNum(gridSize),
+      maxStickLength: roundNum(maxStickLength),
+      load: loadNode ? loadNode.label : null,
+      loadId,
+      unstable: result.unstable,
+      reason: result.reason || "",
+      status: note || modelStatus(),
+      diagnostics: result.diagnostics,
+      joints: [...nodes].sort((a, b) => a.label.localeCompare(b.label)).map((node) => ({
+        label: node.label,
+        x: roundNum(node.x),
+        y: roundNum(node.y),
+        role: node.role || null,
+        id: node.id,
+      })),
+      sticks: [...members].sort((a, b) => memberName(a).localeCompare(memberName(b))).map((member) => {
+        const a = nodeById(member.i);
+        const b = nodeById(member.j);
+        const force = result.forces ? result.forces.get(member.id) : null;
         return {
-          unstable: true,
-          forces: null,
-          reason: `Sticks do not tie these joints into the supports: ${activeDiagnostics.disconnected.join(", ")}.`,
-          diagnostics,
+          name: memberName(member),
+          from: a ? a.label : member.i,
+          to: b ? b.label : member.j,
+          length: a && b ? roundNum(memberLength(a, b)) : null,
+          force: force == null ? null : roundNum(force),
+          id: member.id,
+          i: member.i,
+          j: member.j,
         };
-      }
+      }),
+      nextId,
+      nextLetter,
+    };
+  }
 
-      const count = activeNodes.length;
-      const index = new Map(activeNodes.map((node, i) => [node.id, i]));
-      const ndof = count * 2;
-      const K = Array.from({ length: ndof }, () => Array(ndof).fill(0));
+  function formatParams(snapshot) {
+    return JSON.stringify(snapshot, null, 2);
+  }
 
-      for (const member of modelMembers) {
-        const ia = index.get(member.i);
-        const ib = index.get(member.j);
-        if (ia == null || ib == null) continue;
-        const a = activeNodes[ia];
-        const b = activeNodes[ib];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const length = Math.hypot(dx, dy);
-        if (length < 1e-9) continue;
-        const c = dx / length;
-        const s = dy / length;
-        const k = 1 / length;
-        const cc = c * c * k;
-        const ss = s * s * k;
-        const cs = c * s * k;
-        const dof = [ia * 2, ia * 2 + 1, ib * 2, ib * 2 + 1];
-        const ke = [
-          [cc, cs, -cc, -cs],
-          [cs, ss, -cs, -ss],
-          [-cc, -cs, cc, cs],
-          [-cs, -ss, cs, ss],
-        ];
-        for (let r = 0; r < 4; r++) {
-          for (let c2 = 0; c2 < 4; c2++) K[dof[r]][dof[c2]] += ke[r][c2];
-        }
-      }
+  function renderParams() {
+    if (paramsFocused) return;
+    paramsEl.value = formatParams(buildSnapshot());
+  }
 
-      const fixed = Array(ndof).fill(false);
-      activeNodes.forEach((node, i) => {
-        if (node.role === "pin") {
-          fixed[i * 2] = true;
-          fixed[i * 2 + 1] = true;
-        } else if (node.role === "roller") {
-          fixed[i * 2 + 1] = true;
-        }
-      });
+  function persistDesign() {
+    try {
+      localStorage.setItem(STORAGE_KEY, formatParams(buildSnapshot()));
+    } catch (_) { /* ignore */ }
+  }
 
-      const free = [];
-      for (let i = 0; i < ndof; i++) if (!fixed[i]) free.push(i);
-      diagnostics.freeDofs = free.length;
-      diagnostics.fixedDofs = fixed.filter(Boolean).length;
+  function syncDimensionInputs() {
+    bridgeInput.value = String(bridgeLength);
+    spanInput.value = String(spanLength);
+    gridInput.value = String(gridSize);
+    stickInput.value = String(maxStickLength);
+  }
 
-      const F = Array(ndof).fill(0);
-      if (modelLoadId != null) {
-        const li = index.get(modelLoadId);
-        if (li != null) F[li * 2 + 1] = -1;
-        else if (!activeIds.has(modelLoadId)) {
-          diagnostics.loadIgnored = true;
-        }
-      }
-
-      const reducedK = free.map((row) => free.map((col) => K[row][col]));
-      const reducedF = free.map((dof) => F[dof]);
-      const solved = solveSystem(reducedK, reducedF);
-      if (!solved) {
-        let reason = "Stiffness matrix is singular (mechanism or missing triangulation).";
-        if (activeDiagnostics.determinacy < 0) {
-          reason += ` Short ${-activeDiagnostics.determinacy} stick(s) for a simple plane truss (m = 2j − 3 on active joints).`;
-        }
-        return { unstable: true, forces: null, reason, diagnostics };
-      }
-
-      const u = Array(ndof).fill(0);
-      free.forEach((dof, i) => { u[dof] = solved[i]; });
-      const maxU = u.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
-      diagnostics.maxDisplacement = maxU;
-      if (u.some((value) => !Number.isFinite(value) || Math.abs(value) > DISPLACEMENT_LIMIT)) {
-        return {
-          unstable: true,
-          forces: null,
-          reason: "Computed displacements blew up; the bridge is effectively unstable.",
-          diagnostics,
-        };
-      }
-
-      const forces = new Map();
-      for (const member of modelMembers) {
-        const ia = index.get(member.i);
-        const ib = index.get(member.j);
-        const a = activeNodes[ia];
-        const b = activeNodes[ib];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const length = Math.hypot(dx, dy);
-        if (length < 1e-9) {
-          forces.set(member.id, 0);
-          continue;
-        }
-        const c = dx / length;
-        const s = dy / length;
-        const elongation = c * (u[ib * 2] - u[ia * 2]) + s * (u[ib * 2 + 1] - u[ia * 2 + 1]);
-        const axial = elongation / length;
-        if (!Number.isFinite(axial)) {
-          return {
-            unstable: true,
-            forces: null,
-            reason: "Non-finite member force; the bridge is effectively unstable.",
-            diagnostics,
-          };
-        }
-        forces.set(member.id, axial);
-      }
-      return { unstable: false, forces, reason: "", diagnostics };
+  function applySnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== "object") throw new Error("Parameters must be a JSON object.");
+    const bridge = Number(snapshot.bridgeLength);
+    const span = Number(snapshot.spanLength);
+    const grid = Number(snapshot.gridSize);
+    const stick = Number(snapshot.maxStickLength);
+    if (![bridge, span, grid, stick].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error("bridgeLength, spanLength, gridSize, and maxStickLength must be positive numbers.");
+    }
+    if (span > bridge) throw new Error("Span is longer than the bridge length.");
+    if (stick < grid) throw new Error("Stick length must be at least one grid step.");
+    if (!Array.isArray(snapshot.joints) || !Array.isArray(snapshot.sticks)) {
+      throw new Error("joints and sticks arrays are required.");
     }
 
-    function solveSystem(matrix, vector) {
-      const n = vector.length;
-      if (n === 0) return [];
-      const A = matrix.map((row) => row.slice());
-      const b = vector.slice();
-      let scale = 0;
-      for (let r = 0; r < n; r++) {
-        for (let c = 0; c < n; c++) scale = Math.max(scale, Math.abs(A[r][c]));
-      }
-      const tol = 1e-10 * Math.max(scale, 1);
-      for (let i = 0; i < n; i++) {
-        let pivot = i;
-        for (let r = i + 1; r < n; r++) {
-          if (Math.abs(A[r][i]) > Math.abs(A[pivot][i])) pivot = r;
-        }
-        if (!Number.isFinite(A[pivot][i]) || Math.abs(A[pivot][i]) < tol) return null;
-        if (pivot !== i) {
-          const row = A[i];
-          A[i] = A[pivot];
-          A[pivot] = row;
-          const rhs = b[i];
-          b[i] = b[pivot];
-          b[pivot] = rhs;
-        }
-        const diag = A[i][i];
-        for (let r = i + 1; r < n; r++) {
-          const factor = A[r][i] / diag;
-          A[r][i] = 0;
-          for (let c = i + 1; c < n; c++) A[r][c] -= factor * A[i][c];
-          b[r] -= factor * b[i];
-        }
-      }
-      const x = Array(n);
-      for (let i = n - 1; i >= 0; i--) {
-        let sum = b[i];
-        for (let c = i + 1; c < n; c++) sum -= A[i][c] * x[c];
-        if (!Number.isFinite(A[i][i]) || Math.abs(A[i][i]) < tol) return null;
-        x[i] = sum / A[i][i];
-        if (!Number.isFinite(x[i])) return null;
-      }
-      return x;
-    }
-
-    function solve() {
-      result = analyzeModel(nodes, members, loadId);
-    }
-
-    function showForces() {
-      return !result.unstable && loadId != null && result.forces != null;
-    }
-
-    function maxAbsForce() {
-      if (!showForces()) return 0;
-      let max = 0;
-      for (const value of result.forces.values()) max = Math.max(max, Math.abs(value));
-      return max;
-    }
-
-    function memberStyle(member) {
-      if (!showForces()) return { color: color.tan, width: 4.5, kind: "unloaded", text: "" };
-      const value = result.forces.get(member.id) || 0;
-      const magnitude = Math.abs(value);
-      if (magnitude < NEAR_ZERO) {
-        return { color: color.tan, width: MIN_WIDTH, kind: "unloaded", text: "0.00 unloaded", value };
-      }
-      const width = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, MAX_WIDTH * (magnitude / Math.max(maxAbsForce(), NEAR_ZERO))));
-      if (value > 0) {
-        return { color: color.tension, width, kind: "tension", text: `${value.toFixed(2)} tension`, value };
-      }
-      return { color: color.compression, width, kind: "compression", text: `${value.toFixed(2)} compression`, value };
-    }
-
-    function modelStatus() {
-      if (isEmpty()) {
-        return `Pin at the left end of the span, roller at the right. Grid ${formatInches(gridSize)}, sticks up to ${formatInches(maxStickLength)}.`;
-      }
-      if (result.unstable) return result.reason || UNSTABLE_MSG;
-      if (loadId == null) return NO_LOAD_MSG;
-      return "Solved. Hover a stick to read its force. Positive is tension.";
-    }
-
-    function renderStatus() {
-      const text = note || modelStatus();
-      statusEl.textContent = text;
-      statusEl.classList.toggle("warning", !note && !isEmpty() && result.unstable);
-    }
-
-    function renderPanel() {
-      listEl.replaceChildren();
-      if (isEmpty()) {
-        blurbEl.textContent = "No sticks yet.";
-        return;
-      }
-      if (result.unstable) {
-        blurbEl.textContent = result.reason || "Not available while the bridge is unstable.";
-        return;
-      }
-      if (loadId == null) {
-        blurbEl.textContent = "No load yet.";
-        return;
-      }
-      const loaded = nodeById(loadId);
-      blurbEl.textContent = `Downward load 1 at ${loaded ? loaded.label : "a joint"}.`;
-      const rows = [...members].sort((a, b) => memberName(a).localeCompare(memberName(b)));
-      for (const member of rows) {
-        const style = memberStyle(member);
-        const row = document.createElement("div");
-        row.className = "force-row";
-        const swatch = document.createElement("i");
-        swatch.className = "swatch";
-        swatch.style.background = style.color;
-        const name = document.createElement("span");
-        name.textContent = memberName(member);
-        const value = document.createElement("span");
-        value.textContent = style.kind === "unloaded" ? "0.00" : style.value.toFixed(2);
-        const kind = document.createElement("span");
-        kind.className = "kind";
-        kind.textContent = style.kind;
-        row.append(swatch, name, value, kind);
-        listEl.append(row);
-      }
-    }
-
-    function roundNum(value) {
-      if (!Number.isFinite(value)) return value;
-      return Math.round(value * 1e9) / 1e9;
-    }
-
-    function buildSnapshot() {
-      const loadNode = loadId != null ? nodeById(loadId) : null;
-      const jointRows = [...nodes]
-        .sort((a, b) => a.label.localeCompare(b.label))
-        .map((node) => ({
-          label: node.label,
-          x: roundNum(node.x),
-          y: roundNum(node.y),
-          role: node.role || null,
-          id: node.id,
-        }));
-      const stickRows = [...members]
-        .sort((a, b) => memberName(a).localeCompare(memberName(b)))
-        .map((member) => {
-          const a = nodeById(member.i);
-          const b = nodeById(member.j);
-          const force = result.forces ? result.forces.get(member.id) : null;
-          return {
-            name: memberName(member),
-            from: a ? a.label : member.i,
-            to: b ? b.label : member.j,
-            length: a && b ? roundNum(memberLength(a, b)) : null,
-            force: force == null ? null : roundNum(force),
-            id: member.id,
-            i: member.i,
-            j: member.j,
-          };
-        });
-      return {
-        version: 1,
-        bridgeLength: roundNum(bridgeLength),
-        spanLength: roundNum(spanLength),
-        gridSize: roundNum(gridSize),
-        maxStickLength: roundNum(maxStickLength),
-        load: loadNode ? loadNode.label : null,
-        loadId,
-        unstable: result.unstable,
-        reason: result.reason || "",
-        status: note || modelStatus(),
-        diagnostics: result.diagnostics,
-        joints: jointRows,
-        sticks: stickRows,
-        nextId,
-        nextLetter,
+    const restoredNodes = snapshot.joints.map((joint, index) => {
+      const x = Number(joint.x);
+      const y = Number(joint.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error(`Joint ${joint.label || index} needs numeric x/y.`);
+      const node = {
+        id: Number.isFinite(Number(joint.id)) ? Number(joint.id) : index + 1,
+        x,
+        y,
+        label: String(joint.label || indexToLetters(index)),
       };
+      if (joint.role === "pin" || joint.role === "roller") node.role = joint.role;
+      return node;
+    });
+    if (restoredNodes.filter((n) => n.role === "pin").length !== 1 ||
+        restoredNodes.filter((n) => n.role === "roller").length !== 1) {
+      throw new Error("Exactly one pin and one roller joint are required.");
     }
+    const byLabel = new Map(restoredNodes.map((node) => [node.label, node]));
+    const byId = new Map(restoredNodes.map((node) => [node.id, node]));
+    const restoredMembers = snapshot.sticks.map((stickRow, index) => {
+      let i = stickRow.i;
+      let j = stickRow.j;
+      if ((!Number.isFinite(Number(i)) || !Number.isFinite(Number(j))) && stickRow.from != null && stickRow.to != null) {
+        const a = byLabel.get(String(stickRow.from));
+        const b = byLabel.get(String(stickRow.to));
+        if (!a || !b) throw new Error(`Stick ${stickRow.name || index} refers to missing joints.`);
+        i = a.id;
+        j = b.id;
+      }
+      i = Number(i);
+      j = Number(j);
+      if (!byId.has(i) || !byId.has(j)) throw new Error(`Stick ${stickRow.name || index} refers to missing joint ids.`);
+      return {
+        id: Number.isFinite(Number(stickRow.id)) ? Number(stickRow.id) : 1000 + index,
+        i,
+        j,
+      };
+    });
 
-    function formatParams(snapshot) {
-      return JSON.stringify(snapshot, null, 2);
+    let restoredLoadId = null;
+    if (snapshot.loadId != null && byId.has(Number(snapshot.loadId))) restoredLoadId = Number(snapshot.loadId);
+    else if (snapshot.load != null && byLabel.has(String(snapshot.load))) restoredLoadId = byLabel.get(String(snapshot.load)).id;
+
+    bridgeLength = bridge;
+    spanLength = span;
+    gridSize = grid;
+    maxStickLength = stick;
+    nodes = restoredNodes;
+    members = restoredMembers;
+    loadId = restoredLoadId;
+    placeStart = null;
+    placePreview = null;
+    dragEnd = null;
+    dragMoved = false;
+    hoverId = null;
+    note = "";
+    nextId = Number.isFinite(Number(snapshot.nextId))
+      ? Number(snapshot.nextId)
+      : Math.max(0, ...nodes.map((n) => n.id), ...members.map((m) => m.id)) + 1;
+    nextLetter = Number.isFinite(Number(snapshot.nextLetter))
+      ? Number(snapshot.nextLetter)
+      : nodes.filter((n) => !n.role).length + 2;
+    positionSupports();
+    for (const joint of snapshot.joints) {
+      if (joint.role) continue;
+      const node = byLabel.get(String(joint.label));
+      if (!node) continue;
+      node.x = Number(joint.x);
+      node.y = Number(joint.y);
     }
+    syncDimensionInputs();
+    errorEl.hidden = true;
+    errorEl.textContent = "";
+    markDimensionValidity({});
+  }
 
-    function renderParams() {
-      if (paramsFocused) return;
-      paramsEl.value = formatParams(buildSnapshot());
-    }
-
-    function persistDesign() {
-      try {
-        localStorage.setItem(STORAGE_KEY, formatParams(buildSnapshot()));
-      } catch (_) {
-        /* private mode / quota */
-      }
-    }
-
-    function schedulePersist() {
-      clearTimeout(persistTimer);
-      persistTimer = setTimeout(persistDesign, 50);
-    }
-
-    function syncDimensionInputs() {
-      bridgeInput.value = String(bridgeLength);
-      spanInput.value = String(spanLength);
-      gridInput.value = String(gridSize);
-      stickInput.value = String(maxStickLength);
-    }
-
-    function applySnapshot(snapshot) {
-      if (!snapshot || typeof snapshot !== "object") {
-        throw new Error("Parameters must be a JSON object.");
-      }
-      const bridge = Number(snapshot.bridgeLength);
-      const span = Number(snapshot.spanLength);
-      const grid = Number(snapshot.gridSize);
-      const stick = Number(snapshot.maxStickLength);
-      if (![bridge, span, grid, stick].every((value) => Number.isFinite(value) && value > 0)) {
-        throw new Error("bridgeLength, spanLength, gridSize, and maxStickLength must be positive numbers.");
-      }
-      if (span > bridge) throw new Error("Span is longer than the bridge length.");
-      if (stick < grid) throw new Error("Stick length must be at least one grid step.");
-      if (!Array.isArray(snapshot.joints) || !Array.isArray(snapshot.sticks)) {
-        throw new Error("joints and sticks arrays are required.");
-      }
-
-      const restoredNodes = snapshot.joints.map((joint, index) => {
-        if (!joint || typeof joint !== "object") throw new Error(`Invalid joint at index ${index}.`);
-        const x = Number(joint.x);
-        const y = Number(joint.y);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) {
-          throw new Error(`Joint ${joint.label || index} needs numeric x/y.`);
-        }
-        const node = {
-          id: Number.isFinite(Number(joint.id)) ? Number(joint.id) : index + 1,
-          x,
-          y,
-          label: String(joint.label || indexToLetters(index)),
-        };
-        if (joint.role === "pin" || joint.role === "roller") node.role = joint.role;
-        return node;
-      });
-      const pinCount = restoredNodes.filter((node) => node.role === "pin").length;
-      const rollerCount = restoredNodes.filter((node) => node.role === "roller").length;
-      if (pinCount !== 1 || rollerCount !== 1) {
-        throw new Error("Exactly one pin and one roller joint are required.");
-      }
-      const byLabel = new Map(restoredNodes.map((node) => [node.label, node]));
-      const byId = new Map(restoredNodes.map((node) => [node.id, node]));
-      const restoredMembers = snapshot.sticks.map((stickRow, index) => {
-        if (!stickRow || typeof stickRow !== "object") throw new Error(`Invalid stick at index ${index}.`);
-        let i = stickRow.i;
-        let j = stickRow.j;
-        if ((!Number.isFinite(Number(i)) || !Number.isFinite(Number(j))) && stickRow.from != null && stickRow.to != null) {
-          const a = byLabel.get(String(stickRow.from));
-          const b = byLabel.get(String(stickRow.to));
-          if (!a || !b) throw new Error(`Stick ${stickRow.name || index} refers to missing joints.`);
-          i = a.id;
-          j = b.id;
-        }
-        i = Number(i);
-        j = Number(j);
-        if (!byId.has(i) || !byId.has(j)) {
-          throw new Error(`Stick ${stickRow.name || index} refers to missing joint ids.`);
-        }
-        return {
-          id: Number.isFinite(Number(stickRow.id)) ? Number(stickRow.id) : 1000 + index,
-          i,
-          j,
-        };
-      });
-
-      let restoredLoadId = null;
-      if (snapshot.loadId != null && byId.has(Number(snapshot.loadId))) {
-        restoredLoadId = Number(snapshot.loadId);
-      } else if (snapshot.load != null && byLabel.has(String(snapshot.load))) {
-        restoredLoadId = byLabel.get(String(snapshot.load)).id;
-      }
-
-      bridgeLength = bridge;
-      spanLength = span;
-      gridSize = grid;
-      maxStickLength = stick;
-      nodes = restoredNodes;
-      members = restoredMembers;
-      loadId = restoredLoadId;
-      stickStart = null;
-      dragId = null;
-      dragMoved = false;
-      hoverId = null;
-      note = "";
-      nextId = Number.isFinite(Number(snapshot.nextId))
-        ? Number(snapshot.nextId)
-        : Math.max(0, ...nodes.map((node) => node.id), ...members.map((member) => member.id)) + 1;
-      nextLetter = Number.isFinite(Number(snapshot.nextLetter))
-        ? Number(snapshot.nextLetter)
-        : nodes.filter((node) => !node.role).length + 2;
-      positionSupports();
-      // Keep free joints from the snapshot; supports follow span settings.
-      for (const joint of snapshot.joints) {
-        if (joint.role) continue;
-        const node = byLabel.get(String(joint.label));
-        if (!node) continue;
-        node.x = Number(joint.x);
-        node.y = Number(joint.y);
-      }
-      syncDimensionInputs();
-      errorEl.hidden = true;
-      errorEl.textContent = "";
-      markDimensionValidity({});
-    }
-
-    function applyParamsText() {
-      try {
-        const snapshot = JSON.parse(paramsEl.value);
-        applySnapshot(snapshot);
-        paramsFocused = false;
-        refresh();
-        note = "Applied parameters from the text area.";
-        renderStatus();
-      } catch (error) {
-        note = error && error.message ? error.message : "Could not apply parameters.";
-        renderStatus();
-        statusEl.classList.add("warning");
-      }
-    }
-
-    function loadPersistedDesign() {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return false;
-        const snapshot = JSON.parse(raw);
-        applySnapshot(snapshot);
-        return true;
-      } catch (_) {
-        return false;
-      }
-    }
-
-    function refresh() {
-      solve();
-      renderStatus();
-      renderPanel();
-      renderParams();
-      draw();
-      persistDesign();
-    }
-
-    function readDimensions() {
-      const bridge = Number(bridgeInput.value);
-      const span = Number(spanInput.value);
-      const grid = Number(gridInput.value);
-      const stick = Number(stickInput.value);
-      if (!Number.isFinite(bridge) || !Number.isFinite(span) || bridge <= 0 || span <= 0) {
-        return { error: "Bridge length and span must be positive numbers." };
-      }
-      if (span > bridge) return { error: "Span is longer than the bridge length." };
-      if (!Number.isFinite(grid) || grid <= 0) {
-        return { error: "Grid size must be a positive number." };
-      }
-      if (!Number.isFinite(stick) || stick <= 0) {
-        return { error: "Stick length must be a positive number." };
-      }
-      if (stick + 1e-9 < grid) {
-        return { error: "Stick length must be at least one grid step." };
-      }
-      return { bridge, span, grid, stick };
-    }
-
-    function markDimensionValidity(parsed) {
-      const bridge = Number(bridgeInput.value);
-      const span = Number(spanInput.value);
-      const grid = Number(gridInput.value);
-      const stick = Number(stickInput.value);
-      const bridgeBad = !Number.isFinite(bridge) || bridge <= 0;
-      const spanBad = !Number.isFinite(span) || span <= 0 || (Number.isFinite(bridge) && span > bridge);
-      const gridBad = !Number.isFinite(grid) || grid <= 0;
-      const stickBad = !Number.isFinite(stick) || stick <= 0 || (Number.isFinite(grid) && stick < grid);
-      bridgeInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && bridgeBad);
-      spanInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && spanBad);
-      gridInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && gridBad);
-      stickInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && stickBad);
-      if (!parsed.error) {
-        bridgeInput.removeAttribute("aria-invalid");
-        spanInput.removeAttribute("aria-invalid");
-        gridInput.removeAttribute("aria-invalid");
-        stickInput.removeAttribute("aria-invalid");
-      }
-    }
-
-    function applyDimensions() {
-      const parsed = readDimensions();
-      if (parsed.error) {
-        errorEl.hidden = false;
-        errorEl.textContent = parsed.error;
-        markDimensionValidity(parsed);
-        return;
-      }
-      errorEl.hidden = true;
-      errorEl.textContent = "";
-      markDimensionValidity(parsed);
-      const bridgeChanged = Math.abs(parsed.bridge - bridgeLength) > 1e-12;
-      const spanChanged = Math.abs(parsed.span - spanLength) > 1e-12;
-      const gridChanged = Math.abs(parsed.grid - gridSize) > 1e-12;
-      const stickChanged = Math.abs(parsed.stick - maxStickLength) > 1e-12;
-      if (!bridgeChanged && !spanChanged && !gridChanged && !stickChanged) return;
-      if (bridgeChanged) {
-        const scale = parsed.bridge / bridgeLength;
-        if (Math.abs(scale - 1) > 1e-12) {
-          for (const node of nodes) {
-            if (node.role) continue;
-            node.x *= scale;
-            node.y *= scale;
-          }
-        }
-      }
-      bridgeLength = parsed.bridge;
-      spanLength = parsed.span;
-      gridSize = parsed.grid;
-      maxStickLength = parsed.stick;
-      note = "";
-      positionSupports();
-      if (bridgeChanged || spanChanged) camera.fitted = false;
-      if (bridgeChanged || gridChanged) resnapFreeJoints();
-      if (stickChanged || bridgeChanged || gridChanged) {
-        for (const member of members) {
-          const a = nodeById(member.i);
-          const b = nodeById(member.j);
-          if (a && b && stickTooLong(memberLength(a, b))) {
-            note = `Some sticks exceed ${formatInches(maxStickLength)}. Shorten them or raise stick length.`;
-            break;
-          }
-        }
-      }
+  function applyParamsText() {
+    try {
+      applySnapshot(JSON.parse(paramsEl.value));
+      paramsFocused = false;
       refresh();
-    }
-
-    function scheduleApply() {
-      clearTimeout(inputTimer);
-      inputTimer = setTimeout(applyDimensions, 300);
-    }
-
-    function modeCursor() {
-      if (mode === "joint" || mode === "stick") return "crosshair";
-      if (mode === "move") return dragId != null ? "grabbing" : "grab";
-      return "pointer";
-    }
-
-    function setMode(next) {
-      mode = next;
-      stickStart = null;
-      dragId = null;
-      dragMoved = false;
-      note = "";
-      for (const button of modeButtons) {
-        button.setAttribute("aria-pressed", button.dataset.mode === mode ? "true" : "false");
-      }
-      canvas.style.cursor = modeCursor();
+      note = "Applied parameters from the text area.";
       renderStatus();
-      draw();
+    } catch (error) {
+      note = error && error.message ? error.message : "Could not apply parameters.";
+      renderStatus();
+      statusEl.classList.add("warning");
     }
+  }
 
-    function contentBounds() {
-      let minX = 0;
-      let maxX = bridgeLength;
-      let minY = 0;
-      let maxY = Math.max(bridgeLength * 0.35, gridSize * 4);
-      for (const node of nodes) {
-        minX = Math.min(minX, node.x);
-        maxX = Math.max(maxX, node.x);
-        minY = Math.min(minY, node.y);
-        maxY = Math.max(maxY, node.y);
-      }
-      return { minX, maxX, minY, maxY };
+  function loadPersistedDesign() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_KEY_LEGACY);
+      if (!raw) return false;
+      applySnapshot(JSON.parse(raw));
+      return true;
+    } catch (_) {
+      return false;
     }
+  }
 
-    function fitCamera() {
-      const w = canvas.clientWidth || 1;
-      const h = canvas.clientHeight || 1;
-      const bounds = contentBounds();
-      const padL = 52;
-      const padR = 52;
-      const padT = 76;
-      const padB = 92;
-      const worldW = Math.max(bounds.maxX - bounds.minX, gridSize * 2, 1e-6);
-      const worldH = Math.max(bounds.maxY - bounds.minY, gridSize * 2, 1e-6);
-      const availW = Math.max(w - padL - padR, 20);
-      const availH = Math.max(h - padT - padB, 20);
-      const scale = Math.min(availW / worldW, availH / worldH);
-      camera.scale = Math.min(MAX_VIEW_SCALE, Math.max(MIN_VIEW_SCALE, scale));
-      camera.cx = (bounds.minX + bounds.maxX) / 2;
-      camera.cy = (bounds.minY + bounds.maxY) / 2;
-      camera.fitted = true;
-      syncViewFromCamera();
+  function refresh() {
+    solve();
+    renderStatus();
+    renderPanel();
+    renderParams();
+    draw();
+    persistDesign();
+  }
+
+  function readDimensions() {
+    const bridge = Number(bridgeInput.value);
+    const span = Number(spanInput.value);
+    const grid = Number(gridInput.value);
+    const stick = Number(stickInput.value);
+    if (!Number.isFinite(bridge) || !Number.isFinite(span) || bridge <= 0 || span <= 0) {
+      return { error: "Bridge length and span must be positive numbers." };
     }
+    if (span > bridge) return { error: "Span is longer than the bridge length." };
+    if (!Number.isFinite(grid) || grid <= 0) return { error: "Grid size must be a positive number." };
+    if (!Number.isFinite(stick) || stick <= 0) return { error: "Stick length must be a positive number." };
+    if (stick + 1e-9 < grid) return { error: "Stick length must be at least one grid step." };
+    return { bridge, span, grid, stick };
+  }
 
-    function syncViewFromCamera() {
-      const w = canvas.clientWidth || 1;
-      const h = canvas.clientHeight || 1;
-      view = {
-        scale: camera.scale,
-        cx: camera.cx,
-        cy: camera.cy,
-        width: w,
-        height: h,
-      };
-      return view;
+  function markDimensionValidity(parsed) {
+    const bridge = Number(bridgeInput.value);
+    const span = Number(spanInput.value);
+    const grid = Number(gridInput.value);
+    const stick = Number(stickInput.value);
+    const bridgeBad = !Number.isFinite(bridge) || bridge <= 0;
+    const spanBad = !Number.isFinite(span) || span <= 0 || (Number.isFinite(bridge) && span > bridge);
+    const gridBad = !Number.isFinite(grid) || grid <= 0;
+    const stickBad = !Number.isFinite(stick) || stick <= 0 || (Number.isFinite(grid) && stick < grid);
+    bridgeInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && bridgeBad);
+    spanInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && spanBad);
+    gridInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && gridBad);
+    stickInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && stickBad);
+    if (!parsed.error) {
+      bridgeInput.removeAttribute("aria-invalid");
+      spanInput.removeAttribute("aria-invalid");
+      gridInput.removeAttribute("aria-invalid");
+      stickInput.removeAttribute("aria-invalid");
     }
+  }
 
-    function ensureView() {
-      if (!camera.fitted || !view) fitCamera();
-      else syncViewFromCamera();
-      return view;
+  function applyDimensions() {
+    const parsed = readDimensions();
+    if (parsed.error) {
+      errorEl.hidden = false;
+      errorEl.textContent = parsed.error;
+      markDimensionValidity(parsed);
+      return;
     }
-
-    function worldToScreen(x, y) {
-      if (!view) ensureView();
-      return {
-        x: view.width / 2 + (x - view.cx) * view.scale,
-        y: view.height / 2 - (y - view.cy) * view.scale,
-      };
-    }
-
-    function screenToWorld(x, y) {
-      if (!view) ensureView();
-      return {
-        x: view.cx + (x - view.width / 2) / view.scale,
-        y: view.cy - (y - view.height / 2) / view.scale,
-      };
-    }
-
-    function canvasPoint(event) {
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: event.clientX - rect.left,
-        y: event.clientY - rect.top,
-      };
-    }
-
-    function clampViewScale(scale) {
-      return Math.min(MAX_VIEW_SCALE, Math.max(MIN_VIEW_SCALE, scale));
-    }
-
-    function zoomAt(screenX, screenY, nextScale) {
-      ensureView();
-      const before = screenToWorld(screenX, screenY);
-      camera.scale = clampViewScale(nextScale);
-      syncViewFromCamera();
-      const after = screenToWorld(screenX, screenY);
-      camera.cx += before.x - after.x;
-      camera.cy += before.y - after.y;
-      syncViewFromCamera();
-    }
-
-    function hitRadiusWorld() {
-      if (!view) ensureView();
-      return JOINT_HIT_PX / view.scale;
-    }
-
-    function snapRadius() {
-      return hitRadiusWorld();
-    }
-
-    function nearestJoint(world, radius) {
-      let best = null;
-      let bestD = radius;
-      for (const node of nodes) {
-        const d = Math.hypot(node.x - world.x, node.y - world.y);
-        if (d <= bestD) {
-          best = node;
-          bestD = d;
+    errorEl.hidden = true;
+    errorEl.textContent = "";
+    markDimensionValidity(parsed);
+    const bridgeChanged = Math.abs(parsed.bridge - bridgeLength) > 1e-12;
+    const spanChanged = Math.abs(parsed.span - spanLength) > 1e-12;
+    const gridChanged = Math.abs(parsed.grid - gridSize) > 1e-12;
+    const stickChanged = Math.abs(parsed.stick - maxStickLength) > 1e-12;
+    if (!bridgeChanged && !spanChanged && !gridChanged && !stickChanged) return;
+    if (bridgeChanged) {
+      const scale = parsed.bridge / bridgeLength;
+      if (Math.abs(scale - 1) > 1e-12) {
+        for (const node of nodes) {
+          if (node.role) continue;
+          node.x *= scale;
+          node.y *= scale;
         }
       }
-      return best;
     }
+    bridgeLength = parsed.bridge;
+    spanLength = parsed.span;
+    gridSize = parsed.grid;
+    maxStickLength = parsed.stick;
+    note = "";
+    positionSupports();
+    if (bridgeChanged || spanChanged) camera.fitted = false;
+    if (stickChanged) {
+      for (const member of members) {
+        const a = nodeById(member.i);
+        const b = nodeById(member.j);
+        if (a && b && dist(a, b) > maxStickLength + 1e-9) {
+          note = `Some sticks exceed ${formatInches(maxStickLength)}. Shorten them or raise stick length.`;
+          break;
+        }
+      }
+    }
+    refresh();
+  }
 
-    function nearestJointAtScreen(sx, sy) {
-      ensureView();
-      let best = null;
-      let bestD = JOINT_HIT_PX;
-      for (const node of nodes) {
+  function scheduleApply() {
+    clearTimeout(inputTimer);
+    inputTimer = setTimeout(applyDimensions, 300);
+  }
+
+  function modeCursor() {
+    if (mode === "stick") return "crosshair";
+    if (mode === "move") return dragEnd != null ? "grabbing" : "grab";
+    return "pointer";
+  }
+
+  function setMode(next) {
+    mode = next;
+    placeStart = null;
+    placePreview = null;
+    dragEnd = null;
+    dragMoved = false;
+    note = "";
+    for (const button of modeButtons) {
+      button.setAttribute("aria-pressed", button.dataset.mode === mode ? "true" : "false");
+    }
+    canvas.style.cursor = modeCursor();
+    renderStatus();
+    draw();
+  }
+
+  function contentBounds() {
+    let minX = 0;
+    let maxX = bridgeLength;
+    let minY = 0;
+    let maxY = Math.max(bridgeLength * 0.35, gridSize * 4);
+    for (const node of nodes) {
+      minX = Math.min(minX, node.x);
+      maxX = Math.max(maxX, node.x);
+      minY = Math.min(minY, node.y);
+      maxY = Math.max(maxY, node.y);
+    }
+    return { minX, maxX, minY, maxY };
+  }
+
+  function fitCamera() {
+    const w = canvas.clientWidth || 1;
+    const h = canvas.clientHeight || 1;
+    const bounds = contentBounds();
+    const padL = 52;
+    const padR = 52;
+    const padT = 76;
+    const padB = 92;
+    const worldW = Math.max(bounds.maxX - bounds.minX, gridSize * 2, 1e-6);
+    const worldH = Math.max(bounds.maxY - bounds.minY, gridSize * 2, 1e-6);
+    const availW = Math.max(w - padL - padR, 20);
+    const availH = Math.max(h - padT - padB, 20);
+    const scale = Math.min(availW / worldW, availH / worldH);
+    camera.scale = Math.min(MAX_VIEW_SCALE, Math.max(MIN_VIEW_SCALE, scale));
+    camera.cx = (bounds.minX + bounds.maxX) / 2;
+    camera.cy = (bounds.minY + bounds.maxY) / 2;
+    camera.fitted = true;
+    syncViewFromCamera();
+  }
+
+  function syncViewFromCamera() {
+    view = {
+      scale: camera.scale,
+      cx: camera.cx,
+      cy: camera.cy,
+      width: canvas.clientWidth || 1,
+      height: canvas.clientHeight || 1,
+    };
+    return view;
+  }
+
+  function ensureView() {
+    if (!camera.fitted || !view) fitCamera();
+    else syncViewFromCamera();
+    return view;
+  }
+
+  function worldToScreen(x, y) {
+    if (!view) ensureView();
+    return {
+      x: view.width / 2 + (x - view.cx) * view.scale,
+      y: view.height / 2 - (y - view.cy) * view.scale,
+    };
+  }
+
+  function screenToWorld(x, y) {
+    if (!view) ensureView();
+    return {
+      x: view.cx + (x - view.width / 2) / view.scale,
+      y: view.cy - (y - view.height / 2) / view.scale,
+    };
+  }
+
+  function canvasPoint(event) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  function clampViewScale(scale) {
+    return Math.min(MAX_VIEW_SCALE, Math.max(MIN_VIEW_SCALE, scale));
+  }
+
+  function zoomAt(screenX, screenY, nextScale) {
+    ensureView();
+    const before = screenToWorld(screenX, screenY);
+    camera.scale = clampViewScale(nextScale);
+    syncViewFromCamera();
+    const after = screenToWorld(screenX, screenY);
+    camera.cx += before.x - after.x;
+    camera.cy += before.y - after.y;
+    syncViewFromCamera();
+  }
+
+  function nearestJoint(world, radius) {
+    let best = null;
+    let bestD = radius;
+    for (const node of nodes) {
+      const d = dist(node, world);
+      if (d <= bestD) {
+        best = node;
+        bestD = d;
+      }
+    }
+    return best;
+  }
+
+  function nearestJointAtScreen(sx, sy) {
+    ensureView();
+    let best = null;
+    let bestD = JOINT_HIT_PX;
+    for (const node of nodes) {
+      const p = worldToScreen(node.x, node.y);
+      const d = Math.hypot(p.x - sx, p.y - sy);
+      if (d <= bestD) {
+        best = node;
+        bestD = d;
+      }
+    }
+    return best;
+  }
+
+  function stickEndAtScreen(sx, sy) {
+    ensureView();
+    let best = null;
+    let bestD = END_HIT_PX;
+    for (const member of members) {
+      for (const end of ["i", "j"]) {
+        const node = nodeById(member[end]);
+        if (!node) continue;
         const p = worldToScreen(node.x, node.y);
         const d = Math.hypot(p.x - sx, p.y - sy);
         if (d <= bestD) {
-          best = node;
+          best = { member, end, node };
           bestD = d;
         }
       }
-      return best;
     }
+    return best;
+  }
 
-    function pointerDistance(a, b) {
-      return Math.hypot(a.x - b.x, a.y - b.y);
-    }
+  function distToSegment(px, py, ax, ay, bx, by) {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 < 1e-9 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  }
 
-    function pointerMidpoint(a, b) {
-      return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-    }
-
-    function beginPinch() {
-      if (activePointers.size < 2) return;
-      const points = [...activePointers.values()];
-      const a = points[0];
-      const b = points[1];
-      if (dragId != null) endMove(true);
-      ensureView();
-      const mid = pointerMidpoint(a, b);
-      const worldMid = screenToWorld(mid.x, mid.y);
-      pinch = {
-        distance: Math.max(pointerDistance(a, b), 1),
-        scale: camera.scale,
-        worldMid,
-      };
-      tooltipEl.hidden = true;
-      note = "Pinch to zoom. Joints stay the same size on screen.";
-      renderStatus();
-    }
-
-    function updatePinch() {
-      if (!pinch || activePointers.size < 2) return;
-      const points = [...activePointers.values()];
-      const a = points[0];
-      const b = points[1];
-      const mid = pointerMidpoint(a, b);
-      const distance = Math.max(pointerDistance(a, b), 1);
-      camera.scale = clampViewScale(pinch.scale * (distance / pinch.distance));
-      syncViewFromCamera();
-      // Keep the world point under the pinch midpoint locked to the current midpoint.
-      camera.cx = pinch.worldMid.x - (mid.x - view.width / 2) / camera.scale;
-      camera.cy = pinch.worldMid.y + (mid.y - view.height / 2) / camera.scale;
-      syncViewFromCamera();
-      draw();
-    }
-
-    function endPinch() {
-      pinch = null;
-      if (!note || note.startsWith("Pinch to zoom")) {
-        note = "";
-        renderStatus();
+  function memberAt(sx, sy) {
+    let best = null;
+    let bestD = Infinity;
+    for (const member of members) {
+      const a = nodeById(member.i);
+      const b = nodeById(member.j);
+      const pa = worldToScreen(a.x, a.y);
+      const pb = worldToScreen(b.x, b.y);
+      const d = distToSegment(sx, sy, pa.x, pa.y, pb.x, pb.y);
+      const limit = Math.max(12, memberStyle(member).width / 2 + 4);
+      if (d <= limit && d < bestD) {
+        best = member;
+        bestD = d;
       }
     }
+    return best;
+  }
 
-    function distToSegment(px, py, ax, ay, bx, by) {
-      const dx = bx - ax;
-      const dy = by - ay;
-      const len2 = dx * dx + dy * dy;
-      let t = len2 < 1e-9 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
-      t = Math.max(0, Math.min(1, t));
-      const x = ax + t * dx;
-      const y = ay + t * dy;
-      return Math.hypot(px - x, py - y);
+  function pointerDistance(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  function pointerMidpoint(a, b) {
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  }
+
+  function beginPinch() {
+    if (activePointers.size < 2) return;
+    const points = [...activePointers.values()];
+    if (dragEnd != null) endRotate(true);
+    placeStart = null;
+    placePreview = null;
+    ensureView();
+    const mid = pointerMidpoint(points[0], points[1]);
+    pinch = {
+      distance: Math.max(pointerDistance(points[0], points[1]), 1),
+      scale: camera.scale,
+      worldMid: screenToWorld(mid.x, mid.y),
+    };
+    tooltipEl.hidden = true;
+    note = "Pinch to zoom. Joints stay the same size on screen.";
+    renderStatus();
+  }
+
+  function updatePinch() {
+    if (!pinch || activePointers.size < 2) return;
+    const points = [...activePointers.values()];
+    const mid = pointerMidpoint(points[0], points[1]);
+    const distance = Math.max(pointerDistance(points[0], points[1]), 1);
+    camera.scale = clampViewScale(pinch.scale * (distance / pinch.distance));
+    syncViewFromCamera();
+    camera.cx = pinch.worldMid.x - (mid.x - view.width / 2) / camera.scale;
+    camera.cy = pinch.worldMid.y + (mid.y - view.height / 2) / camera.scale;
+    syncViewFromCamera();
+    draw();
+  }
+
+  function endPinch() {
+    pinch = null;
+    if (!note || note.startsWith("Pinch to zoom")) {
+      note = "";
+      renderStatus();
     }
+  }
 
-    function memberAt(sx, sy) {
-      let best = null;
-      let bestD = Infinity;
+  function commitStick(start, end) {
+    if (dist(start, end) < MIN_STICK) {
+      note = "Stick is too short.";
+      renderStatus();
+      return false;
+    }
+    if (dist(start, end) > maxStickLength + 1e-9) {
+      note = `Stick would exceed ${formatInches(maxStickLength)}.`;
+      renderStatus();
+      return false;
+    }
+    const a = ensureJoint(start.x, start.y);
+    const b = ensureJoint(end.x, end.y);
+    if (a.id === b.id) {
+      note = "Stick needs two distinct ends.";
+      renderStatus();
+      return false;
+    }
+    if (findMember(a.id, b.id)) {
+      note = "That stick is already there.";
+      renderStatus();
+      return false;
+    }
+    members.push({ id: nextId++, i: a.id, j: b.id });
+    resolveIntersections();
+    note = "";
+    refresh();
+    return true;
+  }
+
+  function beginPlace(world) {
+    const start = pickEndpoint(world, world);
+    // For the first end, allow free/grid/joint/cross without a pivot constraint.
+    const snapped = (() => {
+      ensureView();
+      const snapWorld = SNAP_PX / view.scale;
+      const preferred = world;
+      const candidates = [];
+      candidates.push({ ...snapPoint(preferred.x, preferred.y), kind: "grid" });
+      for (const node of nodes) candidates.push({ x: node.x, y: node.y, kind: "joint" });
       for (const member of members) {
         const a = nodeById(member.i);
         const b = nodeById(member.j);
-        const pa = worldToScreen(a.x, a.y);
-        const pb = worldToScreen(b.x, b.y);
-        const d = distToSegment(sx, sy, pa.x, pa.y, pb.x, pb.y);
-        const limit = Math.max(12, memberStyle(member).width / 2 + 4);
-        if (d <= limit && d < bestD) {
-          best = member;
+        const close = closestPointOnSegment(preferred, a, b);
+        candidates.push({ x: close.x, y: close.y, kind: "cross" });
+      }
+      let best = snapPoint(preferred.x, preferred.y);
+      let bestD = dist(best, preferred);
+      let kind = "grid";
+      for (const c of candidates) {
+        const d = dist(c, preferred);
+        if (d < bestD) {
+          best = c;
           bestD = d;
+          kind = c.kind;
         }
       }
-      return best;
-    }
+      if (bestD > snapWorld) return { x: preferred.x, y: preferred.y, kind: "free" };
+      return { x: best.x, y: best.y, kind };
+    })();
+    placeStart = { x: snapped.x, y: snapped.y, kind: snapped.kind };
+    placePreview = { x: snapped.x, y: snapped.y, kind: snapped.kind };
+    note = `Click the other end within ${formatInches(maxStickLength)} (or drag).`;
+    renderStatus();
+    draw();
+  }
 
-    function addJoint(world) {
-      const snapped = snapPoint(world.x, world.y);
-      const existing = jointAtPoint(snapped.x, snapped.y) || nearestJoint(snapped, snapRadius() * 0.35);
-      if (existing) {
-        note = existing.role ? "That grid point is a support." : "That joint is already there.";
-        renderStatus();
-        return;
-      }
-      nodes.push({
+  function updatePlacePreview(world) {
+    if (!placeStart) return;
+    placePreview = pickEndpoint(world, placeStart);
+    draw();
+  }
+
+  function finishPlace(world) {
+    if (!placeStart) return;
+    const end = pickEndpoint(world, placeStart);
+    const start = { x: placeStart.x, y: placeStart.y };
+    placeStart = null;
+    placePreview = null;
+    commitStick(start, end);
+  }
+
+  function beginRotate(hit, pointerId) {
+    const member = hit.member;
+    const end = hit.end;
+    const movingId = member[end];
+    const pivotId = otherEnd(member, movingId);
+    const moving = nodeById(movingId);
+    const pivot = nodeById(pivotId);
+    if (!moving || !pivot) return false;
+    if (moving.role) {
+      note = "Support ends stay with the span. Rotate the other end of the stick.";
+      renderStatus();
+      return false;
+    }
+    let currentMovingId = movingId;
+    if (degreeOf(movingId) > 1) {
+      const neu = {
         id: nextId++,
-        x: snapped.x,
-        y: snapped.y,
+        x: moving.x,
+        y: moving.y,
         label: indexToLetters(nextLetter++),
-      });
-      note = "";
-      refresh();
+      };
+      nodes.push(neu);
+      member[end] = neu.id;
+      currentMovingId = neu.id;
     }
-
-    function addStick(joint) {
-      if (!stickStart) {
-        stickStart = joint.id;
-        note = `Click a second joint within ${formatInches(maxStickLength)}.`;
-        renderStatus();
-        draw();
-        return;
-      }
-      if (stickStart === joint.id) return;
-      if (findMember(stickStart, joint.id)) {
-        stickStart = null;
-        note = "That stick is already there.";
-        renderStatus();
-        draw();
-        return;
-      }
-      const a = nodeById(stickStart);
-      const length = memberLength(a, joint);
-      if (length < 1e-9) return;
-      if (stickTooLong(length)) {
-        note = `Stick would be ${formatInches(length)}; max is ${formatInches(maxStickLength)}.`;
-        stickStart = null;
-        renderStatus();
-        draw();
-        return;
-      }
-      members.push({ id: nextId++, i: stickStart, j: joint.id });
-      stickStart = null;
-      note = "";
-      refresh();
+    dragEnd = {
+      memberId: member.id,
+      end,
+      pivotId,
+      movingId: currentMovingId,
+    };
+    dragMoved = false;
+    if (pointerId != null && canvas.setPointerCapture) {
+      try { canvas.setPointerCapture(pointerId); } catch (_) { /* ignore */ }
     }
+    canvas.style.cursor = "grabbing";
+    note = "Rotate this end. Snaps to grid or crossings; length cannot exceed stick length.";
+    renderStatus();
+    draw();
+    return true;
+  }
 
-    function beginMove(joint, pointerId) {
+  function updateRotate(world) {
+    if (!dragEnd) return;
+    const pivot = nodeById(dragEnd.pivotId);
+    const moving = nodeById(dragEnd.movingId);
+    const member = memberById(dragEnd.memberId);
+    if (!pivot || !moving || !member) return;
+    const snapped = pickEndpoint(world, pivot, [member.id]);
+    if (pointsEqual(moving, snapped)) return;
+    moving.x = snapped.x;
+    moving.y = snapped.y;
+    dragMoved = true;
+    note = "";
+    solve();
+    renderStatus();
+    renderPanel();
+    draw();
+  }
+
+  function endRotate(quiet) {
+    if (!dragEnd) return;
+    const member = memberById(dragEnd.memberId);
+    const moving = nodeById(dragEnd.movingId);
+    dragEnd = null;
+    canvas.style.cursor = modeCursor();
+    if (!quiet && !dragMoved) {
+      note = "Drag a stick end to rotate or shorten it.";
+      renderStatus();
+      dragMoved = false;
+      draw();
+      return;
+    }
+    dragMoved = false;
+    if (moving) {
+      const existing = jointAtPoint(moving.x, moving.y, moving.id);
+      if (existing && member) {
+        member[member.i === moving.id ? "i" : "j"] = existing.id;
+        if (loadId === moving.id) loadId = existing.id;
+        nodes = nodes.filter((node) => node.id !== moving.id);
+      }
+    }
+    resolveIntersections();
+    pruneOrphanJoints();
+    refresh();
+  }
+
+  function setLoad(joint) {
+    loadId = joint.id;
+    note = "";
+    refresh();
+  }
+
+  function deleteAt(sx, sy) {
+    const joint = nearestJointAtScreen(sx, sy);
+    if (joint) {
       if (joint.role) {
         note = "Supports stay with the span.";
         renderStatus();
-        return false;
-      }
-      dragId = joint.id;
-      dragMoved = false;
-      if (pointerId != null && canvas.setPointerCapture) {
-        try { canvas.setPointerCapture(pointerId); } catch (_) { /* ignore */ }
-      }
-      canvas.style.cursor = "grabbing";
-      note = "Drag to a grid point. Connected sticks cannot exceed stick length.";
-      renderStatus();
-      return true;
-    }
-
-    function moveDragTo(world) {
-      if (dragId == null) return;
-      const node = nodeById(dragId);
-      if (!node || node.role) return;
-      const snapped = snapPoint(world.x, world.y);
-      if (nearlyEqual(node.x, snapped.x) && nearlyEqual(node.y, snapped.y)) return;
-      if (jointAtPoint(snapped.x, snapped.y, node.id)) {
-        note = "Another joint is already on that grid point.";
-        renderStatus();
-        draw();
         return;
       }
-      const overflow = connectedStickOverflow(node.id, snapped.x, snapped.y);
-      if (overflow) {
-        note = `${overflow.name} would be ${formatInches(overflow.length)}; max is ${formatInches(maxStickLength)}.`;
-        renderStatus();
-        draw();
-        return;
-      }
-      node.x = snapped.x;
-      node.y = snapped.y;
-      dragMoved = true;
-      note = "";
-      solve();
-      renderStatus();
-      renderPanel();
-      draw();
-    }
-
-    function endMove(quiet) {
-      if (dragId == null) return;
-      dragId = null;
-      canvas.style.cursor = modeCursor();
-      if (!quiet && !dragMoved) {
-        note = "Drag a free joint to move it on the grid.";
-        renderStatus();
-      }
-      const moved = dragMoved;
-      dragMoved = false;
-      if (moved) refresh();
-      else draw();
-    }
-
-    function setLoad(joint) {
-      loadId = joint.id;
-      note = "";
-      refresh();
-    }
-
-    function deleteAt(sx, sy) {
-      const joint = nearestJointAtScreen(sx, sy);
-      if (joint) {
-        if (joint.role) {
-          note = "Supports stay with the span.";
-          renderStatus();
-          return;
-        }
-        members = members.filter((member) => member.i !== joint.id && member.j !== joint.id);
-        nodes = nodes.filter((node) => node.id !== joint.id);
-        if (loadId === joint.id) loadId = null;
-        if (stickStart === joint.id) stickStart = null;
-        note = "";
+      if (mergeJointAway(joint)) {
+        note = "Removed joint. Crossing sticks can slide past each other.";
+        pruneOrphanJoints();
         refresh();
+        renderStatus();
         return;
       }
-      const member = memberAt(sx, sy);
-      if (!member) return;
-      members = members.filter((item) => item.id !== member.id);
-      if (hoverId === member.id) hoverId = null;
+      members = members.filter((member) => member.i !== joint.id && member.j !== joint.id);
+      nodes = nodes.filter((node) => node.id !== joint.id);
+      if (loadId === joint.id) loadId = null;
       note = "";
+      pruneOrphanJoints();
       refresh();
+      return;
+    }
+    const member = memberAt(sx, sy);
+    if (!member) return;
+    members = members.filter((item) => item.id !== member.id);
+    if (hoverId === member.id) hoverId = null;
+    pruneOrphanJoints();
+    note = "";
+    refresh();
+  }
+
+  function onPointerDown(event) {
+    if (event.button !== 0 && event.pointerType !== "touch") return;
+    const point = canvasPoint(event);
+    activePointers.set(event.pointerId, point);
+    if (activePointers.size >= 2) {
+      beginPinch();
+      return;
+    }
+    if (pinch) return;
+    ensureView();
+    const world = screenToWorld(point.x, point.y);
+
+    if (mode === "stick") {
+      if (placeStart) {
+        finishPlace(world);
+        return;
+      }
+      beginPlace(world);
+      return;
     }
 
-    function onPointerDown(event) {
-      if (event.button !== 0 && event.pointerType !== "touch") return;
-      const point = canvasPoint(event);
-      activePointers.set(event.pointerId, point);
-      if (activePointers.size >= 2) {
-        beginPinch();
+    if (mode === "move") {
+      const endHit = stickEndAtScreen(point.x, point.y);
+      if (!endHit) {
+        note = "Drag a stick end, or pinch with two fingers to zoom.";
+        renderStatus();
         return;
       }
-      if (pinch) return;
-      ensureView();
-      const world = screenToWorld(point.x, point.y);
-      if (mode === "joint") {
-        addJoint(world);
-        return;
-      }
-      const joint = nearestJointAtScreen(point.x, point.y);
-      if (mode === "move") {
-        if (!joint) {
-          note = "Drag a free joint, or pinch with two fingers to zoom.";
-          renderStatus();
-          return;
-        }
-        beginMove(joint, event.pointerId);
-        return;
-      }
-      if (mode === "stick") {
-        if (!joint) {
-          stickStart = null;
-          note = "";
-          renderStatus();
-          draw();
-          return;
-        }
-        addStick(joint);
-        return;
-      }
-      if (mode === "load") {
-        if (!joint) {
-          note = "Click a joint to place the load.";
-          renderStatus();
-          return;
-        }
-        setLoad(joint);
-        return;
-      }
-      if (mode === "delete") deleteAt(point.x, point.y);
+      beginRotate(endHit, event.pointerId);
+      return;
     }
 
-    function updateMemberTooltip(sx, sy) {
-      const member = memberAt(sx, sy);
-      const id = member ? member.id : null;
-      if (id !== hoverId) {
-        hoverId = id;
-        draw();
-      }
-      if (!member) {
-        tooltipEl.hidden = true;
+    const joint = nearestJointAtScreen(point.x, point.y);
+    if (mode === "load") {
+      if (!joint) {
+        note = "Click a joint to place the load.";
+        renderStatus();
         return;
       }
-      const style = memberStyle(member);
-      const a = nodeById(member.i);
-      const b = nodeById(member.j);
-      const length = a && b ? memberLength(a, b) : null;
-      let text = `${memberName(member)} · `;
-      if (length != null) text += `${formatInches(length)} · `;
-      if (result.unstable) text += "unstable";
-      else if (loadId == null) text += "no load yet";
-      else text += style.text;
-      tooltipEl.textContent = text;
-      tooltipEl.hidden = false;
-      const width = tooltipEl.offsetWidth;
-      const height = tooltipEl.offsetHeight;
-      const boundsW = canvas.clientWidth;
-      const boundsH = canvas.clientHeight;
-      let x = sx - width / 2;
-      let y = sy - height - 12;
-      if (y < 8) y = sy + 16;
-      x = Math.max(8, Math.min(boundsW - width - 8, x));
-      y = Math.max(8, Math.min(boundsH - height - 8, y));
-      tooltipEl.style.left = `${x}px`;
-      tooltipEl.style.top = `${y}px`;
+      setLoad(joint);
+      return;
     }
+    if (mode === "delete") deleteAt(point.x, point.y);
+  }
 
-    function onPointerMove(event) {
-      if (!activePointers.has(event.pointerId) && event.buttons === 0 && event.pointerType !== "touch") {
-        // Hover only
-        const hover = canvasPoint(event);
-        updateMemberTooltip(hover.x, hover.y);
-        return;
-      }
-      if (activePointers.has(event.pointerId)) {
-        activePointers.set(event.pointerId, canvasPoint(event));
-      }
-      if (activePointers.size >= 2) {
-        if (!pinch) beginPinch();
-        updatePinch();
-        return;
-      }
-      if (pinch) return;
-      if (dragId != null) {
-        tooltipEl.hidden = true;
-        const point = canvasPoint(event);
-        moveDragTo(screenToWorld(point.x, point.y));
-        return;
-      }
-      const point = canvasPoint(event);
-      updateMemberTooltip(point.x, point.y);
-    }
-
-    function onPointerUp(event) {
-      activePointers.delete(event.pointerId);
-      if (activePointers.size < 2 && pinch) endPinch();
-      if (activePointers.size === 0 && dragId != null) endMove();
-      if (event.pointerId != null && canvas.hasPointerCapture?.(event.pointerId)) {
-        try { canvas.releasePointerCapture(event.pointerId); } catch (_) { /* ignore */ }
-      }
-    }
-
-    function onWheel(event) {
-      event.preventDefault();
-      const point = canvasPoint(event);
-      const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
-      zoomAt(point.x, point.y, camera.scale * factor);
+  function updateMemberTooltip(sx, sy) {
+    const member = memberAt(sx, sy);
+    const id = member ? member.id : null;
+    if (id !== hoverId) {
+      hoverId = id;
       draw();
     }
-
-    function drawGrid() {
-      if (!(gridSize > 0) || !view) return;
-      const width = canvas.clientWidth || 1;
-      const height = canvas.clientHeight || 1;
-      const topLeft = screenToWorld(0, 0);
-      const bottomRight = screenToWorld(width, height);
-      const worldLeft = Math.min(topLeft.x, bottomRight.x) - gridSize;
-      const worldRight = Math.max(topLeft.x, bottomRight.x) + gridSize;
-      const worldBottom = Math.min(topLeft.y, bottomRight.y) - gridSize;
-      const worldTop = Math.max(topLeft.y, bottomRight.y) + gridSize;
-      const startX = Math.floor(worldLeft / gridSize) * gridSize;
-      const startY = Math.floor(worldBottom / gridSize) * gridSize;
-      const maxLines = 400;
-      let count = 0;
-      ctx.save();
-      ctx.strokeStyle = "rgba(183, 168, 148, 0.45)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([]);
-      for (let x = startX; x <= worldRight + 1e-9 && count < maxLines; x += gridSize, count++) {
-        const a = worldToScreen(x, worldBottom);
-        const b = worldToScreen(x, worldTop);
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-      }
-      for (let y = startY; y <= worldTop + 1e-9 && count < maxLines; y += gridSize, count++) {
-        const a = worldToScreen(worldLeft, y);
-        const b = worldToScreen(worldRight, y);
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-      }
-      ctx.restore();
+    if (!member) {
+      tooltipEl.hidden = true;
+      return;
     }
+    const style = memberStyle(member);
+    const a = nodeById(member.i);
+    const b = nodeById(member.j);
+    const length = a && b ? memberLength(a, b) : null;
+    let text = `${memberName(member)} · `;
+    if (length != null) text += `${formatInches(length)} · `;
+    if (result.unstable) text += "unstable";
+    else if (loadId == null) text += "no load yet";
+    else text += style.text;
+    tooltipEl.textContent = text;
+    tooltipEl.hidden = false;
+    const width = tooltipEl.offsetWidth;
+    const height = tooltipEl.offsetHeight;
+    let x = sx - width / 2;
+    let y = sy - height - 12;
+    if (y < 8) y = sy + 16;
+    x = Math.max(8, Math.min(canvas.clientWidth - width - 8, x));
+    y = Math.max(8, Math.min(canvas.clientHeight - height - 8, y));
+    tooltipEl.style.left = `${x}px`;
+    tooltipEl.style.top = `${y}px`;
+  }
 
-    function drawStickReach() {
-      if (mode !== "stick" || stickStart == null || !view) return;
-      const start = nodeById(stickStart);
-      if (!start) return;
-      const center = worldToScreen(start.x, start.y);
-      const radius = maxStickLength * view.scale;
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(28, 79, 138, 0.35)";
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([6, 5]);
-      ctx.stroke();
-      ctx.restore();
+  function onPointerMove(event) {
+    if (!activePointers.has(event.pointerId) && event.buttons === 0 && event.pointerType !== "touch") {
+      updateMemberTooltip(canvasPoint(event).x, canvasPoint(event).y);
+      return;
     }
+    if (activePointers.has(event.pointerId)) {
+      activePointers.set(event.pointerId, canvasPoint(event));
+    }
+    if (activePointers.size >= 2) {
+      if (!pinch) beginPinch();
+      updatePinch();
+      return;
+    }
+    if (pinch) return;
+    const point = canvasPoint(event);
+    const world = screenToWorld(point.x, point.y);
+    if (dragEnd != null) {
+      tooltipEl.hidden = true;
+      updateRotate(world);
+      return;
+    }
+    if (mode === "stick" && placeStart) {
+      updatePlacePreview(world);
+      return;
+    }
+    updateMemberTooltip(point.x, point.y);
+  }
 
-    function drawDeck() {
-      const pin = nodes.find((node) => node.role === "pin");
-      const roller = nodes.find((node) => node.role === "roller");
-      strokeWorld(0, 0, pin.x, 0, "#d5c7b6", 1.5, [5, 4]);
-      strokeWorld(pin.x, 0, roller.x, 0, "#b7a894", 2, []);
-      strokeWorld(roller.x, 0, bridgeLength, 0, "#d5c7b6", 1.5, [5, 4]);
-      for (const x of [0, bridgeLength]) {
-        const p = worldToScreen(x, 0);
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y - 6);
-        ctx.lineTo(p.x, p.y + 6);
-        ctx.strokeStyle = "#b7a894";
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([]);
-        ctx.stroke();
+  function onPointerUp(event) {
+    const point = activePointers.get(event.pointerId) || canvasPoint(event);
+    activePointers.delete(event.pointerId);
+    if (activePointers.size < 2 && pinch) endPinch();
+    if (activePointers.size === 0 && dragEnd != null) endRotate();
+    // Click-drag place: if preview moved away from start on pointerup, finish.
+    if (activePointers.size === 0 && mode === "stick" && placeStart && placePreview) {
+      if (dist(placeStart, placePreview) >= MIN_STICK) {
+        const end = { x: placePreview.x, y: placePreview.y };
+        const start = { x: placeStart.x, y: placeStart.y };
+        // Only auto-finish when this pointer clearly dragged; taps keep two-click flow.
+        const dragged = event.pointerType === "touch"
+          ? dist(placeStart, screenToWorld(point.x, point.y)) > gridSize * 0.25
+          : dist(placeStart, screenToWorld(point.x, point.y)) > gridSize * 0.15;
+        if (dragged) {
+          placeStart = null;
+          placePreview = null;
+          commitStick(start, end);
+        }
       }
     }
+    if (event.pointerId != null && canvas.hasPointerCapture?.(event.pointerId)) {
+      try { canvas.releasePointerCapture(event.pointerId); } catch (_) { /* ignore */ }
+    }
+  }
 
-    function strokeWorld(x1, y1, x2, y2, stroke, width, dash) {
-      const a = worldToScreen(x1, y1);
-      const b = worldToScreen(x2, y2);
+  function onWheel(event) {
+    event.preventDefault();
+    const point = canvasPoint(event);
+    const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+    zoomAt(point.x, point.y, camera.scale * factor);
+    draw();
+  }
+
+  function drawGrid() {
+    if (!(gridSize > 0) || !view) return;
+    const topLeft = screenToWorld(0, 0);
+    const bottomRight = screenToWorld(view.width, view.height);
+    const worldLeft = Math.min(topLeft.x, bottomRight.x) - gridSize;
+    const worldRight = Math.max(topLeft.x, bottomRight.x) + gridSize;
+    const worldBottom = Math.min(topLeft.y, bottomRight.y) - gridSize;
+    const worldTop = Math.max(topLeft.y, bottomRight.y) + gridSize;
+    const startX = Math.floor(worldLeft / gridSize) * gridSize;
+    const startY = Math.floor(worldBottom / gridSize) * gridSize;
+    let count = 0;
+    ctx.save();
+    ctx.strokeStyle = "rgba(183, 168, 148, 0.45)";
+    ctx.lineWidth = 1;
+    for (let x = startX; x <= worldRight + 1e-9 && count < 400; x += gridSize, count++) {
+      const a = worldToScreen(x, worldBottom);
+      const b = worldToScreen(x, worldTop);
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = stroke;
-      ctx.lineWidth = width;
-      ctx.setLineDash(dash);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    function drawSupport(node) {
-      const p = worldToScreen(node.x, node.y);
-      ctx.save();
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = color.ink;
-      ctx.fillStyle = color.paper;
-      ctx.lineJoin = "round";
-      if (node.role === "pin") {
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y + 4);
-        ctx.lineTo(p.x - 14, p.y + 24);
-        ctx.lineTo(p.x + 14, p.y + 24);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(p.x - 22, p.y + 28);
-        ctx.lineTo(p.x + 22, p.y + 28);
-        ctx.stroke();
-        for (let i = -16; i <= 16; i += 6) {
-          ctx.beginPath();
-          ctx.moveTo(p.x + i, p.y + 28);
-          ctx.lineTo(p.x + i - 5, p.y + 36);
-          ctx.stroke();
-        }
-      } else {
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y + 4);
-        ctx.lineTo(p.x - 14, p.y + 20);
-        ctx.lineTo(p.x + 14, p.y + 20);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(p.x, p.y + 26, 5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(p.x - 22, p.y + 34);
-        ctx.lineTo(p.x + 22, p.y + 34);
-        ctx.stroke();
-        for (let i = -16; i <= 16; i += 6) {
-          ctx.beginPath();
-          ctx.moveTo(p.x + i, p.y + 34);
-          ctx.lineTo(p.x + i - 5, p.y + 42);
-          ctx.stroke();
-        }
-      }
-      ctx.restore();
-    }
-
-    function drawSupportCaption(node, showWord) {
-      const p = worldToScreen(node.x, node.y);
-      ctx.fillStyle = color.muted;
-      ctx.font = "11px sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      if (showWord) ctx.fillText(node.role === "pin" ? "pin" : "roller", p.x, p.y + 46);
-    }
-
-    function drawJoint(node) {
-      const p = worldToScreen(node.x, node.y);
-      if (stickStart === node.id || dragId === node.id) {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, JOINT_HALO_PX, 0, Math.PI * 2);
-        ctx.strokeStyle = color.load;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, JOINT_DRAW_PX, 0, Math.PI * 2);
-      ctx.fillStyle = color.paper;
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = color.ink;
       ctx.stroke();
     }
-
-    function drawLabel(node) {
-      const p = worldToScreen(node.x, node.y);
-      ctx.font = "600 13px sans-serif";
-      ctx.fillStyle = color.ink;
-      ctx.textBaseline = "middle";
-      if (node.id === loadId) {
-        ctx.textAlign = "right";
-        ctx.fillText(node.label, p.x - 12, p.y - 12);
-      } else {
-        ctx.textAlign = "left";
-        ctx.fillText(node.label, p.x + 10, p.y - 12);
-      }
-    }
-
-    function drawLoad(node) {
-      const p = worldToScreen(node.x, node.y);
-      const tip = p.y - 10;
-      const tail = p.y - 46;
-      ctx.save();
-      ctx.strokeStyle = color.load;
-      ctx.fillStyle = color.load;
-      ctx.lineWidth = 2;
-      ctx.lineCap = "round";
+    for (let y = startY; y <= worldTop + 1e-9 && count < 400; y += gridSize, count++) {
+      const a = worldToScreen(worldLeft, y);
+      const b = worldToScreen(worldRight, y);
       ctx.beginPath();
-      ctx.moveTo(p.x, tail);
-      ctx.lineTo(p.x, tip);
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
       ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function strokeWorld(x1, y1, x2, y2, stroke, width, dash) {
+    const a = worldToScreen(x1, y1);
+    const b = worldToScreen(x2, y2);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = width;
+    ctx.setLineDash(dash || []);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  function drawDeck() {
+    const pin = nodes.find((node) => node.role === "pin");
+    const roller = nodes.find((node) => node.role === "roller");
+    strokeWorld(0, 0, pin.x, 0, "#d5c7b6", 1.5, [5, 4]);
+    strokeWorld(pin.x, 0, roller.x, 0, "#b7a894", 2, []);
+    strokeWorld(roller.x, 0, bridgeLength, 0, "#d5c7b6", 1.5, [5, 4]);
+  }
+
+  function drawSupport(node) {
+    const p = worldToScreen(node.x, node.y);
+    ctx.save();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = color.ink;
+    ctx.fillStyle = color.paper;
+    ctx.lineJoin = "round";
+    if (node.role === "pin") {
       ctx.beginPath();
-      ctx.moveTo(p.x, tip + 1);
-      ctx.lineTo(p.x - 6, tip - 11);
-      ctx.lineTo(p.x + 6, tip - 11);
+      ctx.moveTo(p.x, p.y + 4);
+      ctx.lineTo(p.x - 14, p.y + 24);
+      ctx.lineTo(p.x + 14, p.y + 24);
       ctx.closePath();
       ctx.fill();
-      ctx.font = "600 13px sans-serif";
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p.x - 22, p.y + 28);
+      ctx.lineTo(p.x + 22, p.y + 28);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y + 4);
+      ctx.lineTo(p.x - 14, p.y + 20);
+      ctx.lineTo(p.x + 14, p.y + 20);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y + 26, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p.x - 22, p.y + 34);
+      ctx.lineTo(p.x + 22, p.y + 34);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawJoint(node) {
+    const p = worldToScreen(node.x, node.y);
+    const active = dragEnd && dragEnd.movingId === node.id;
+    if (active) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, JOINT_HALO_PX, 0, Math.PI * 2);
+      ctx.strokeStyle = color.load;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, JOINT_DRAW_PX, 0, Math.PI * 2);
+    ctx.fillStyle = color.paper;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = color.ink;
+    ctx.stroke();
+  }
+
+  function drawLabel(node) {
+    const p = worldToScreen(node.x, node.y);
+    ctx.font = "600 13px sans-serif";
+    ctx.fillStyle = color.ink;
+    ctx.textBaseline = "middle";
+    if (node.id === loadId) {
+      ctx.textAlign = "right";
+      ctx.fillText(node.label, p.x - 12, p.y - 12);
+    } else {
       ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText("1", p.x + 10, (tail + tip) / 2);
-      ctx.restore();
+      ctx.fillText(node.label, p.x + 10, p.y - 12);
     }
+  }
 
-    function drawForceLabels() {
-      if (!showForces()) return;
-      let cx = 0;
-      let cy = 0;
-      for (const node of nodes) {
-        const p = worldToScreen(node.x, node.y);
-        cx += p.x;
-        cy += p.y;
-      }
-      cx /= nodes.length;
-      cy /= nodes.length;
-      ctx.save();
-      ctx.font = "600 12px sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.lineJoin = "round";
-      const placed = [];
-      for (const member of members) {
-        const style = memberStyle(member);
-        if (!style.text) continue;
-        const a = nodeById(member.i);
-        const b = nodeById(member.j);
-        const pa = worldToScreen(a.x, a.y);
-        const pb = worldToScreen(b.x, b.y);
-        const mx = (pa.x + pb.x) / 2;
-        const my = (pa.y + pb.y) / 2;
-        const dx = pb.x - pa.x;
-        const dy = pb.y - pa.y;
-        const len = Math.hypot(dx, dy) || 1;
-        const textWidth = ctx.measureText(style.text).width;
-        if (textWidth + 28 > len * 0.62) continue;
-        let px = -dy / len;
-        let py = dx / len;
-        if (px * (mx - cx) + py * (my - cy) < 0) {
-          px = -px;
-          py = -py;
-        }
-        const x = mx + px * 18;
-        const y = my + py * 18;
-        const box = { x: x - textWidth / 2 - 4, y: y - 9, w: textWidth + 8, h: 18 };
-        const hits = placed.some((other) =>
-          box.x < other.x + other.w && box.x + box.w > other.x && box.y < other.y + other.h && box.y + box.h > other.y
-        );
-        if (hits) continue;
-        placed.push(box);
-        ctx.lineWidth = 4;
-        ctx.strokeStyle = "rgba(255, 250, 243, 0.94)";
-        ctx.strokeText(style.text, x, y);
-        ctx.fillStyle = color.ink;
-        ctx.fillText(style.text, x, y);
-      }
-      ctx.restore();
+  function drawLoad(node) {
+    const p = worldToScreen(node.x, node.y);
+    const tip = p.y - 10;
+    const tail = p.y - 46;
+    ctx.save();
+    ctx.strokeStyle = color.load;
+    ctx.fillStyle = color.load;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(p.x, tail);
+    ctx.lineTo(p.x, tip);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(p.x, tip + 1);
+    ctx.lineTo(p.x - 6, tip - 11);
+    ctx.lineTo(p.x + 6, tip - 11);
+    ctx.closePath();
+    ctx.fill();
+    ctx.font = "600 13px sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText("1", p.x + 10, (tail + tip) / 2);
+    ctx.restore();
+  }
+
+  function drawPreview() {
+    if (!placeStart || !placePreview || !view) return;
+    const a = worldToScreen(placeStart.x, placeStart.y);
+    const b = worldToScreen(placePreview.x, placePreview.y);
+    ctx.save();
+    ctx.strokeStyle = color.load;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([7, 5]);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, JOINT_DRAW_PX, 0, Math.PI * 2);
+    ctx.fillStyle = color.paper;
+    ctx.fill();
+    ctx.strokeStyle = color.load;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, JOINT_DRAW_PX, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    const reach = maxStickLength * view.scale;
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, reach, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(28, 79, 138, 0.28)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 5]);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawRotateGuide() {
+    if (!dragEnd || !view) return;
+    const pivot = nodeById(dragEnd.pivotId);
+    const moving = nodeById(dragEnd.movingId);
+    if (!pivot || !moving) return;
+    const p = worldToScreen(pivot.x, pivot.y);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, maxStickLength * view.scale, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(28, 79, 138, 0.28)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 5]);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawForceLabels() {
+    if (!showForces()) return;
+    let cx = 0;
+    let cy = 0;
+    for (const node of nodes) {
+      const p = worldToScreen(node.x, node.y);
+      cx += p.x;
+      cy += p.y;
     }
-
-    function draw() {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const width = Math.max(1, canvas.clientWidth);
-      const height = Math.max(1, canvas.clientHeight);
-      const bitmapW = Math.max(1, Math.round(width * dpr));
-      const bitmapH = Math.max(1, Math.round(height * dpr));
-      if (canvas.width !== bitmapW || canvas.height !== bitmapH) {
-        canvas.width = bitmapW;
-        canvas.height = bitmapH;
+    cx /= Math.max(nodes.length, 1);
+    cy /= Math.max(nodes.length, 1);
+    ctx.save();
+    ctx.font = "600 12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const placed = [];
+    for (const member of members) {
+      const style = memberStyle(member);
+      if (!style.text) continue;
+      const a = nodeById(member.i);
+      const b = nodeById(member.j);
+      const pa = worldToScreen(a.x, a.y);
+      const pb = worldToScreen(b.x, b.y);
+      const mx = (pa.x + pb.x) / 2;
+      const my = (pa.y + pb.y) / 2;
+      const dx = pb.x - pa.x;
+      const dy = pb.y - pa.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const textWidth = ctx.measureText(style.text).width;
+      if (textWidth + 28 > len * 0.62) continue;
+      let px = -dy / len;
+      let py = dx / len;
+      if (px * (mx - cx) + py * (my - cy) < 0) {
+        px = -px;
+        py = -py;
       }
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ensureView();
-      ctx.clearRect(0, 0, width, height);
-      ctx.fillStyle = color.paper;
-      ctx.fillRect(0, 0, width, height);
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      drawGrid();
-      drawDeck();
-      drawStickReach();
+      const x = mx + px * 18;
+      const y = my + py * 18;
+      const box = { x: x - textWidth / 2 - 4, y: y - 9, w: textWidth + 8, h: 18 };
+      if (placed.some((other) =>
+        box.x < other.x + other.w && box.x + box.w > other.x && box.y < other.y + other.h && box.y + box.h > other.y
+      )) continue;
+      placed.push(box);
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "rgba(255, 250, 243, 0.94)";
+      ctx.strokeText(style.text, x, y);
+      ctx.fillStyle = color.ink;
+      ctx.fillText(style.text, x, y);
+    }
+    ctx.restore();
+  }
 
-      for (const member of members) {
-        const style = memberStyle(member);
-        const a = nodeById(member.i);
-        const b = nodeById(member.j);
-        const pa = worldToScreen(a.x, a.y);
-        const pb = worldToScreen(b.x, b.y);
-        if (member.id === hoverId) {
-          ctx.beginPath();
-          ctx.moveTo(pa.x, pa.y);
-          ctx.lineTo(pb.x, pb.y);
-          ctx.strokeStyle = "rgba(42, 36, 28, 0.22)";
-          ctx.lineWidth = style.width + 6;
-          ctx.stroke();
-        }
+  function draw() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const width = Math.max(1, canvas.clientWidth);
+    const height = Math.max(1, canvas.clientHeight);
+    const bitmapW = Math.max(1, Math.round(width * dpr));
+    const bitmapH = Math.max(1, Math.round(height * dpr));
+    if (canvas.width !== bitmapW || canvas.height !== bitmapH) {
+      canvas.width = bitmapW;
+      canvas.height = bitmapH;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ensureView();
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = color.paper;
+    ctx.fillRect(0, 0, width, height);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    drawGrid();
+    drawDeck();
+    drawRotateGuide();
+
+    for (const member of members) {
+      const style = memberStyle(member);
+      const a = nodeById(member.i);
+      const b = nodeById(member.j);
+      const pa = worldToScreen(a.x, a.y);
+      const pb = worldToScreen(b.x, b.y);
+      if (member.id === hoverId) {
         ctx.beginPath();
         ctx.moveTo(pa.x, pa.y);
         ctx.lineTo(pb.x, pb.y);
-        ctx.strokeStyle = style.color;
-        ctx.lineWidth = style.width;
+        ctx.strokeStyle = "rgba(42, 36, 28, 0.22)";
+        ctx.lineWidth = style.width + 6;
         ctx.stroke();
       }
-
-      const pin = nodes.find((node) => node.role === "pin");
-      const roller = nodes.find((node) => node.role === "roller");
-      const pinPt = worldToScreen(pin.x, pin.y);
-      const rollerPt = worldToScreen(roller.x, roller.y);
-      const showWords = Math.hypot(pinPt.x - rollerPt.x, pinPt.y - rollerPt.y) > 96;
-      for (const node of nodes) if (node.role) drawSupport(node);
-      for (const node of nodes) drawJoint(node);
-      for (const node of nodes) if (node.role) drawSupportCaption(node, showWords);
-      for (const node of nodes) drawLabel(node);
-      if (loadId != null) {
-        const loaded = nodeById(loadId);
-        if (loaded) drawLoad(loaded);
-      }
-      drawForceLabels();
-      emptyEl.hidden = !isEmpty();
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.strokeStyle = style.color;
+      ctx.lineWidth = style.width;
+      ctx.stroke();
     }
 
-    function resize() {
-      if (camera.fitted) syncViewFromCamera();
-      draw();
+    drawPreview();
+    for (const node of nodes) if (node.role) drawSupport(node);
+    for (const node of nodes) drawJoint(node);
+    for (const node of nodes) drawLabel(node);
+    if (loadId != null) {
+      const loaded = nodeById(loadId);
+      if (loaded) drawLoad(loaded);
     }
+    drawForceLabels();
+    emptyEl.hidden = !isEmpty();
+  }
 
-    modeButtons.forEach((button) => {
-      button.addEventListener("click", () => setMode(button.dataset.mode));
-    });
-    document.getElementById("fit-view").addEventListener("click", () => {
-      fitCamera();
-      note = "View fitted to the bridge.";
-      renderStatus();
-      draw();
-    });
-    document.getElementById("clear").addEventListener("click", () => {
-      const pin = nodes.find((node) => node.role === "pin");
-      const roller = nodes.find((node) => node.role === "roller");
-      nodes = [pin, roller];
-      members = [];
-      loadId = null;
-      stickStart = null;
-      dragId = null;
-      dragMoved = false;
-      hoverId = null;
-      note = "";
-      nextLetter = 2;
-      tooltipEl.hidden = true;
-      paramsFocused = false;
-      activePointers.clear();
-      pinch = null;
-      camera.fitted = false;
-      canvas.style.cursor = modeCursor();
-      refresh();
-    });
-    document.getElementById("apply-params").addEventListener("click", applyParamsText);
-    document.getElementById("copy-params").addEventListener("click", async () => {
-      try {
-        const text = paramsEl.value || formatParams(buildSnapshot());
-        await navigator.clipboard.writeText(text);
-        note = "Copied bridge parameters.";
-        renderStatus();
-      } catch (_) {
-        paramsEl.focus();
-        paramsEl.select();
-        note = "Select the text area and copy manually.";
-        renderStatus();
-      }
-    });
-    paramsEl.addEventListener("focus", () => { paramsFocused = true; });
-    paramsEl.addEventListener("blur", () => {
-      paramsFocused = false;
-      renderParams();
-    });
-    for (const input of [bridgeInput, spanInput, gridInput, stickInput]) {
-      input.addEventListener("input", scheduleApply);
-      input.addEventListener("change", () => {
-        clearTimeout(inputTimer);
-        applyDimensions();
-      });
-      input.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter") return;
-        event.preventDefault();
-        clearTimeout(inputTimer);
-        applyDimensions();
-      });
-    }
-    canvas.addEventListener("pointerdown", onPointerDown);
-    canvas.addEventListener("pointermove", onPointerMove);
-    canvas.addEventListener("pointerup", onPointerUp);
-    canvas.addEventListener("pointercancel", onPointerUp);
-    canvas.addEventListener("wheel", onWheel, { passive: false });
-    canvas.addEventListener("pointerleave", () => {
-      if (dragId != null || pinch) return;
-      hoverId = null;
-      tooltipEl.hidden = true;
-      draw();
-    });
-    canvas.addEventListener("contextmenu", (event) => event.preventDefault());
-    new ResizeObserver(resize).observe(canvas.parentElement);
-    window.addEventListener("resize", resize);
+  function resize() {
+    if (camera.fitted) syncViewFromCamera();
+    draw();
+  }
 
-    window.addEventListener("pagehide", persistDesign);
-    window.addEventListener("beforeunload", persistDesign);
-
-    if (!loadPersistedDesign()) {
-      resetModel();
-      syncDimensionInputs();
-    }
+  modeButtons.forEach((button) => {
+    button.addEventListener("click", () => setMode(button.dataset.mode));
+  });
+  document.getElementById("fit-view").addEventListener("click", () => {
+    fitCamera();
+    note = "View fitted to the bridge.";
+    renderStatus();
+    draw();
+  });
+  document.getElementById("clear").addEventListener("click", () => {
+    resetModel();
+    placeStart = null;
+    placePreview = null;
+    dragEnd = null;
+    dragMoved = false;
+    hoverId = null;
+    note = "";
+    tooltipEl.hidden = true;
+    paramsFocused = false;
+    activePointers.clear();
+    pinch = null;
+    camera.fitted = false;
+    canvas.style.cursor = modeCursor();
     refresh();
+  });
+  document.getElementById("apply-params").addEventListener("click", applyParamsText);
+  document.getElementById("copy-params").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(paramsEl.value || formatParams(buildSnapshot()));
+      note = "Copied bridge parameters.";
+      renderStatus();
+    } catch (_) {
+      paramsEl.focus();
+      paramsEl.select();
+      note = "Select the text area and copy manually.";
+      renderStatus();
+    }
+  });
+  paramsEl.addEventListener("focus", () => { paramsFocused = true; });
+  paramsEl.addEventListener("blur", () => {
+    paramsFocused = false;
+    renderParams();
+  });
+  for (const input of [bridgeInput, spanInput, gridInput, stickInput]) {
+    input.addEventListener("input", scheduleApply);
+    input.addEventListener("change", () => {
+      clearTimeout(inputTimer);
+      applyDimensions();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      clearTimeout(inputTimer);
+      applyDimensions();
+    });
+  }
+  canvas.addEventListener("pointerdown", onPointerDown);
+  canvas.addEventListener("pointermove", onPointerMove);
+  canvas.addEventListener("pointerup", onPointerUp);
+  canvas.addEventListener("pointercancel", onPointerUp);
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("pointerleave", () => {
+    if (dragEnd != null || pinch || placeStart) return;
+    hoverId = null;
+    tooltipEl.hidden = true;
+    draw();
+  });
+  canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+  new ResizeObserver(resize).observe(canvas.parentElement);
+  window.addEventListener("resize", resize);
+  window.addEventListener("pagehide", persistDesign);
+  window.addEventListener("beforeunload", persistDesign);
 
-    window.__bridge = {
-      getModel() {
-        return {
-          ...buildSnapshot(),
-          emptyVisible: !emptyEl.hidden,
-          showForces: showForces(),
-          error: errorEl.hidden ? "" : errorEl.textContent,
-        };
-      },
-      worldToScreen(x, y) {
-        ensureView();
-        return worldToScreen(x, y);
-      },
-      snapPoint,
-      analyzeModel,
-      applySnapshot,
-      buildSnapshot,
-      fitCamera,
-      getCamera: () => ({ ...camera }),
-      zoomAt,
-    };
+  if (!loadPersistedDesign()) {
+    resetModel();
+    syncDimensionInputs();
+  }
+  refresh();
+
+  window.__bridge = {
+    getModel() {
+      return {
+        ...buildSnapshot(),
+        emptyVisible: !emptyEl.hidden,
+        showForces: showForces(),
+        error: errorEl.hidden ? "" : errorEl.textContent,
+      };
+    },
+    worldToScreen,
+    snapPoint,
+    analyzeModel,
+    applySnapshot,
+    buildSnapshot,
+    fitCamera,
+    getCamera: () => ({ ...camera }),
+    zoomAt,
+    resolveIntersections,
+  };
+})();
+
   </script>
 </body>
 </html>
