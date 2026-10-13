@@ -2778,26 +2778,46 @@
 
   function drawLoad(node) {
     const p = worldToScreen(node.x, node.y);
-    const tip = p.y - 10;
-    const tail = p.y - 46;
+    const tip = p.y - 8;
+    const tail = p.y - 62;
+    const headW = 11;
+    const headH = 18;
     ctx.save();
-    ctx.strokeStyle = color.load;
-    ctx.fillStyle = color.load;
-    ctx.lineWidth = 2;
+    // Soft halo so the arrow stays readable over sticks/grid.
+    ctx.strokeStyle = "rgba(255, 250, 243, 0.92)";
+    ctx.lineWidth = 7;
+    ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(p.x, tail);
-    ctx.lineTo(p.x, tip);
+    ctx.lineTo(p.x, tip + 2);
+    ctx.stroke();
+    ctx.strokeStyle = color.load;
+    ctx.fillStyle = color.load;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(p.x, tail);
+    ctx.lineTo(p.x, tip + 2);
     ctx.stroke();
     ctx.beginPath();
     ctx.moveTo(p.x, tip + 1);
-    ctx.lineTo(p.x - 6, tip - 11);
-    ctx.lineTo(p.x + 6, tip - 11);
+    ctx.lineTo(p.x - headW, tip - headH);
+    ctx.lineTo(p.x + headW, tip - headH);
     ctx.closePath();
     ctx.fill();
-    ctx.font = "600 13px sans-serif";
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255, 250, 243, 0.85)";
+    ctx.stroke();
+    ctx.strokeStyle = color.load;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.font = "700 16px sans-serif";
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
-    ctx.fillText("1", p.x + 10, (tail + tip) / 2);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(255, 250, 243, 0.9)";
+    ctx.strokeText("1", p.x + 12, (tail + tip) / 2);
+    ctx.fillStyle = color.load;
+    ctx.fillText("1", p.x + 12, (tail + tip) / 2);
     ctx.restore();
   }
 
