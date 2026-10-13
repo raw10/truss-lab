@@ -91,6 +91,74 @@
 
     #clear { margin-left: 4px; }
 
+    .analysis-toggle {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .analysis-toggle > .label {
+      font-size: 0.78rem;
+      letter-spacing: 0.01em;
+      color: var(--muted);
+    }
+
+    .analysis-toggle .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+    }
+
+    .analysis-toggle .toggle-side {
+      font-size: 0.88rem;
+      color: var(--muted);
+      user-select: none;
+    }
+
+    .analysis-toggle .toggle-side[data-active="true"] {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    #analysis-switch {
+      position: relative;
+      width: 44px;
+      height: 26px;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid #cbbba6;
+      background: #efe4d4;
+      box-shadow: inset 0 1px 2px rgba(42, 36, 28, 0.08);
+      flex: 0 0 auto;
+    }
+
+    #analysis-switch:hover { background: #f4ebe0; }
+
+    #analysis-switch[aria-checked="true"] {
+      background: #2a241c;
+      border-color: #2a241c;
+    }
+
+    #analysis-switch .knob {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fffaf3;
+      box-shadow: 0 1px 2px rgba(42, 36, 28, 0.2);
+      transition: transform 160ms ease;
+      pointer-events: none;
+    }
+
+    #analysis-switch[aria-checked="true"] .knob {
+      transform: translateX(18px);
+      background: #fff;
+    }
+
     .dims {
       display: flex;
       flex-wrap: wrap;
@@ -295,7 +363,7 @@
 
     .force-row {
       display: grid;
-      grid-template-columns: 0.7rem 2.2rem 3.4rem 1fr;
+      grid-template-columns: 0.7rem 2.2rem minmax(3.4rem, auto) 1fr;
       gap: 6px;
       align-items: center;
       padding: 4px 0;
@@ -333,7 +401,7 @@
 <body>
   <header>
     <h1>Popsicle Bridge</h1>
-    <p>Stick-first truss lab. Place sticks, rotate ends to snap, pinch to zoom.</p>
+    <p>Stick-first lab. Place sticks, rotate ends to snap, pinch to zoom. Analyze as a pin truss or a bending frame.</p>
   </header>
 
   <div class="toolbar">
@@ -344,6 +412,16 @@
       <button type="button" data-mode="delete" aria-pressed="false">Delete</button>
       <button type="button" id="fit-view">Fit</button>
       <button type="button" id="clear">Clear</button>
+    </div>
+    <div class="analysis-toggle">
+      <span class="label">Analysis</span>
+      <span class="toggle-row">
+        <span class="toggle-side" data-side="truss" data-active="true">Truss</span>
+        <button type="button" id="analysis-switch" role="switch" aria-checked="false" aria-label="Frame analysis with bending">
+          <span class="knob" aria-hidden="true"></span>
+        </button>
+        <span class="toggle-side" data-side="frame" data-active="false">Frame</span>
+      </span>
     </div>
     <div class="dims">
       <label class="field">
@@ -371,6 +449,13 @@
         <span class="label">Stick length</span>
         <span class="entry">
           <input id="stick-length" type="number" min="0" step="any" value="4.5" inputmode="decimal" autocomplete="off">
+          <span class="units">in</span>
+        </span>
+      </label>
+      <label class="field" id="stick-depth-field" hidden>
+        <span class="label">Stick depth</span>
+        <span class="entry">
+          <input id="stick-depth" type="number" min="0" step="any" value="0.12" inputmode="decimal" autocomplete="off" title="In-plane section depth for bending (I = d²/12)">
           <span class="units">in</span>
         </span>
       </label>
@@ -440,7 +525,11 @@
   const spanInput = document.getElementById("span-length");
   const gridInput = document.getElementById("grid-size");
   const stickInput = document.getElementById("stick-length");
+  const stickDepthInput = document.getElementById("stick-depth");
+  const stickDepthField = document.getElementById("stick-depth-field");
   const modeButtons = [...document.querySelectorAll("[data-mode]")];
+  const analysisSwitch = document.getElementById("analysis-switch");
+  const analysisSides = [...document.querySelectorAll(".analysis-toggle .toggle-side")];
   let paramsFocused = false;
 
   const color = {
@@ -457,6 +546,8 @@
   let spanLength = 8;
   let gridSize = 0.5;
   let maxStickLength = 4.5;
+  let stickDepth = 0.12;
+  let analysisMode = "truss"; // "truss" | "frame"
   let nextId = 1;
   let nextLetter = 2;
   let nodes = [];
@@ -469,7 +560,7 @@
   let dragEnd = null;
   let dragMoved = false;
   let note = "";
-  let result = { unstable: true, forces: null, reason: "", diagnostics: null };
+  let result = { unstable: true, forces: null, reason: "", diagnostics: null, suggestions: null };
   let view = null;
   let camera = { scale: 40, cx: 5, cy: 2.75, fitted: false };
   const activePointers = new Map();
@@ -986,35 +1077,16 @@
     return x;
   }
 
-  function analyzeModel(modelNodes, modelMembers, modelLoadId) {
-    const diagnostics = diagnoseModel(modelNodes, modelMembers);
-    const activeIds = new Set();
-    for (const node of modelNodes) {
-      if (node.role) activeIds.add(node.id);
-    }
-    for (const member of modelMembers) {
-      activeIds.add(member.i);
-      activeIds.add(member.j);
-    }
-    const activeNodes = modelNodes.filter((node) => activeIds.has(node.id));
-    const activeDiagnostics = diagnoseModel(activeNodes, modelMembers);
-    diagnostics.activeJoints = activeNodes.length;
-    diagnostics.activeFreeJoints = activeNodes.filter((node) => !node.role).length;
-    diagnostics.activeDeterminacy = activeDiagnostics.determinacy;
-    diagnostics.activeDisconnected = activeDiagnostics.disconnected;
+  function memberSection() {
+    // EA = 1 (same nondimensional axial scale as the truss solver).
+    // Stick depth is the in-plane section height for bending: I/A = d²/12.
+    const depth = Math.max(stickDepth, 1e-6);
+    const EA = 1;
+    const EI = EA * (depth * depth) / 12;
+    return { EA, EI, depth };
+  }
 
-    if (modelMembers.length === 0) {
-      return { unstable: true, forces: null, reason: "No sticks yet.", diagnostics };
-    }
-    if (activeDiagnostics.disconnected.length) {
-      return {
-        unstable: true,
-        forces: null,
-        reason: `Sticks do not tie these joints into the supports: ${activeDiagnostics.disconnected.join(", ")}.`,
-        diagnostics,
-      };
-    }
-
+  function assembleTrussStiffness(activeNodes, modelMembers) {
     const count = activeNodes.length;
     const index = new Map(activeNodes.map((node, i) => [node.id, i]));
     const ndof = count * 2;
@@ -1060,39 +1132,185 @@
 
     const free = [];
     for (let i = 0; i < ndof; i++) if (!fixed[i]) free.push(i);
-    diagnostics.freeDofs = free.length;
-    diagnostics.fixedDofs = fixed.filter(Boolean).length;
-
-    const F = Array(ndof).fill(0);
-    if (modelLoadId != null) {
-      const li = index.get(modelLoadId);
-      if (li != null) F[li * 2 + 1] = -1;
-    }
-
     const reducedK = free.map((row) => free.map((col) => K[row][col]));
-    const reducedF = free.map((dof) => F[dof]);
-    const solved = solveSystem(reducedK, reducedF);
-    if (!solved) {
-      let reason = "Stiffness matrix is singular (mechanism or missing triangulation).";
-      if (activeDiagnostics.determinacy < 0) {
-        reason += ` Short ${-activeDiagnostics.determinacy} stick(s) for a simple plane truss (m = 2j − 3 on active joints).`;
+    return { K, free, index, ndof, reducedK, dofsPerNode: 2 };
+  }
+
+  function assembleFrameStiffness(activeNodes, modelMembers) {
+    const { EA, EI } = memberSection();
+    const count = activeNodes.length;
+    const index = new Map(activeNodes.map((node, i) => [node.id, i]));
+    const ndof = count * 3;
+    const K = Array.from({ length: ndof }, () => Array(ndof).fill(0));
+
+    for (const member of modelMembers) {
+      const ia = index.get(member.i);
+      const ib = index.get(member.j);
+      if (ia == null || ib == null) continue;
+      const a = activeNodes[ia];
+      const b = activeNodes[ib];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const L = Math.hypot(dx, dy);
+      if (L < 1e-9) continue;
+      const c = dx / L;
+      const s = dy / L;
+      const EA_L = EA / L;
+      const EI_L = EI / L;
+      const EI_L2 = EI / (L * L);
+      const EI_L3 = EI / (L * L * L);
+      // Local beam stiffness (x along member, y transverse, z rotation).
+      const kl = [
+        [EA_L, 0, 0, -EA_L, 0, 0],
+        [0, 12 * EI_L3, 6 * EI_L2, 0, -12 * EI_L3, 6 * EI_L2],
+        [0, 6 * EI_L2, 4 * EI_L, 0, -6 * EI_L2, 2 * EI_L],
+        [-EA_L, 0, 0, EA_L, 0, 0],
+        [0, -12 * EI_L3, -6 * EI_L2, 0, 12 * EI_L3, -6 * EI_L2],
+        [0, 6 * EI_L2, 2 * EI_L, 0, -6 * EI_L2, 4 * EI_L],
+      ];
+      // R maps global → local; kg = Rᵀ kl R.
+      const R = [
+        [c, s, 0, 0, 0, 0],
+        [-s, c, 0, 0, 0, 0],
+        [0, 0, 1, 0, 0, 0],
+        [0, 0, 0, c, s, 0],
+        [0, 0, 0, -s, c, 0],
+        [0, 0, 0, 0, 0, 1],
+      ];
+      const tmp = Array.from({ length: 6 }, () => Array(6).fill(0));
+      const kg = Array.from({ length: 6 }, () => Array(6).fill(0));
+      for (let i = 0; i < 6; i++) {
+        for (let j = 0; j < 6; j++) {
+          let sum = 0;
+          for (let k = 0; k < 6; k++) sum += kl[i][k] * R[k][j];
+          tmp[i][j] = sum;
+        }
       }
-      return { unstable: true, forces: null, reason, diagnostics };
+      for (let i = 0; i < 6; i++) {
+        for (let j = 0; j < 6; j++) {
+          let sum = 0;
+          for (let k = 0; k < 6; k++) sum += R[k][i] * tmp[k][j];
+          kg[i][j] = sum;
+        }
+      }
+      const dof = [ia * 3, ia * 3 + 1, ia * 3 + 2, ib * 3, ib * 3 + 1, ib * 3 + 2];
+      for (let r = 0; r < 6; r++) {
+        for (let c2 = 0; c2 < 6; c2++) K[dof[r]][dof[c2]] += kg[r][c2];
+      }
     }
 
-    const u = Array(ndof).fill(0);
-    free.forEach((dof, i) => { u[dof] = solved[i]; });
-    const maxU = u.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
-    diagnostics.maxDisplacement = maxU;
-    if (u.some((value) => !Number.isFinite(value) || Math.abs(value) > DISPLACEMENT_LIMIT)) {
-      return {
-        unstable: true,
-        forces: null,
-        reason: "Computed displacements blew up; the bridge is effectively unstable.",
-        diagnostics,
-      };
+    const fixed = Array(ndof).fill(false);
+    activeNodes.forEach((node, i) => {
+      if (node.role === "pin") {
+        fixed[i * 3] = true;
+        fixed[i * 3 + 1] = true;
+      } else if (node.role === "roller") {
+        fixed[i * 3 + 1] = true;
+      }
+    });
+
+    const free = [];
+    for (let i = 0; i < ndof; i++) if (!fixed[i]) free.push(i);
+    const reducedK = free.map((row) => free.map((col) => K[row][col]));
+    return { K, free, index, ndof, reducedK, dofsPerNode: 3, EA, EI };
+  }
+
+  function assembleReducedStiffness(activeNodes, modelMembers, mode = analysisMode) {
+    return mode === "frame"
+      ? assembleFrameStiffness(activeNodes, modelMembers)
+      : assembleTrussStiffness(activeNodes, modelMembers);
+  }
+
+  function stiffnessIsNonsingular(activeNodes, modelMembers, mode = "truss") {
+    if (!modelMembers.length) return false;
+    const { reducedK, free } = assembleReducedStiffness(activeNodes, modelMembers, mode);
+    if (!free.length) return true;
+    const probe = Array(free.length).fill(0);
+    probe[0] = 1;
+    return solveSystem(reducedK, probe) != null;
+  }
+
+  function candidateBraceEdges(activeNodes, modelMembers, maxLen) {
+    const connected = new Set();
+    for (const member of modelMembers) {
+      connected.add([member.i, member.j].sort((a, b) => a - b).join(":"));
+    }
+    const edges = [];
+    for (let i = 0; i < activeNodes.length; i++) {
+      for (let j = i + 1; j < activeNodes.length; j++) {
+        const a = activeNodes[i];
+        const b = activeNodes[j];
+        const key = [a.id, b.id].sort((x, y) => x - y).join(":");
+        if (connected.has(key)) continue;
+        const length = dist(a, b);
+        if (length < 1e-9 || length > maxLen + 1e-9) continue;
+        const name = a.label < b.label ? a.label + b.label : b.label + a.label;
+        const freeEnds = (a.role ? 0 : 1) + (b.role ? 0 : 1);
+        edges.push({ i: a.id, j: b.id, name, length, a, b, freeEnds });
+      }
+    }
+    // Prefer interior braces (both ends free), then shorter sticks.
+    edges.sort((p, q) => (q.freeEnds - p.freeEnds) || (p.length - q.length) || p.name.localeCompare(q.name));
+    return edges;
+  }
+
+  function suggestBraces(activeNodes, modelMembers, maxLen) {
+    if (stiffnessIsNonsingular(activeNodes, modelMembers, "truss")) return null;
+    const candidates = candidateBraceEdges(activeNodes, modelMembers, maxLen);
+    if (!candidates.length) return null;
+
+    for (const edge of candidates) {
+      const trial = modelMembers.concat([{ i: edge.i, j: edge.j, id: -1 }]);
+      if (stiffnessIsNonsingular(activeNodes, trial, "truss")) {
+        return {
+          sticks: [{ from: edge.a.label, to: edge.b.label, name: edge.name, length: edge.length, i: edge.i, j: edge.j }],
+          label: edge.name,
+        };
+      }
     }
 
+    const limit = Math.min(candidates.length, 14);
+    for (let i = 0; i < limit; i++) {
+      for (let j = i + 1; j < limit; j++) {
+        const e1 = candidates[i];
+        const e2 = candidates[j];
+        const trial = modelMembers.concat([
+          { i: e1.i, j: e1.j, id: -1 },
+          { i: e2.i, j: e2.j, id: -2 },
+        ]);
+        if (stiffnessIsNonsingular(activeNodes, trial, "truss")) {
+          const sticks = [
+            { from: e1.a.label, to: e1.b.label, name: e1.name, length: e1.length, i: e1.i, j: e1.j },
+            { from: e2.a.label, to: e2.b.label, name: e2.name, length: e2.length, i: e2.i, j: e2.j },
+          ];
+          return { sticks, label: `${e1.name} + ${e2.name}` };
+        }
+      }
+    }
+    return null;
+  }
+
+  function mechanismReason(activeDiagnostics, suggestion, mode) {
+    if (mode === "frame") {
+      return "Frame stiffness matrix is singular — check that sticks connect the load into both supports.";
+    }
+    const shortBy = activeDiagnostics.determinacy < 0 ? -activeDiagnostics.determinacy : 0;
+    let reason = "Pin-jointed truss is a mechanism (joints carry axial force only; no bending).";
+    if (shortBy) {
+      reason += ` Short ${shortBy} stick(s) for a simple plane truss (m = 2j − 3).`;
+    } else {
+      reason += " Stiffness matrix is singular — missing triangulation or a near-collinear bay.";
+    }
+    reason += " Switch to Frame to include bending at joints, or";
+    if (suggestion) {
+      reason += ` try adding brace stick(s) ${suggestion.label}.`;
+    } else {
+      reason += " add triangulation braces.";
+    }
+    return reason;
+  }
+
+  function frameMemberForces(activeNodes, modelMembers, index, u, EA, EI) {
     const forces = new Map();
     for (const member of modelMembers) {
       const ia = index.get(member.i);
@@ -1101,26 +1319,176 @@
       const b = activeNodes[ib];
       const dx = b.x - a.x;
       const dy = b.y - a.y;
-      const length = Math.hypot(dx, dy);
-      if (length < 1e-9) {
-        forces.set(member.id, 0);
+      const L = Math.hypot(dx, dy);
+      if (L < 1e-9) {
+        forces.set(member.id, { axial: 0, shear: 0, moment: 0 });
         continue;
       }
-      const c = dx / length;
-      const s = dy / length;
-      const elongation = c * (u[ib * 2] - u[ia * 2]) + s * (u[ib * 2 + 1] - u[ia * 2 + 1]);
-      const axial = elongation / length;
-      if (!Number.isFinite(axial)) {
+      const c = dx / L;
+      const s = dy / L;
+      const ug = [
+        u[ia * 3], u[ia * 3 + 1], u[ia * 3 + 2],
+        u[ib * 3], u[ib * 3 + 1], u[ib * 3 + 2],
+      ];
+      const R = [
+        [c, s, 0, 0, 0, 0],
+        [-s, c, 0, 0, 0, 0],
+        [0, 0, 1, 0, 0, 0],
+        [0, 0, 0, c, s, 0],
+        [0, 0, 0, -s, c, 0],
+        [0, 0, 0, 0, 0, 1],
+      ];
+      const ul = Array(6).fill(0);
+      for (let i = 0; i < 6; i++) {
+        let sum = 0;
+        for (let j = 0; j < 6; j++) sum += R[i][j] * ug[j];
+        ul[i] = sum;
+      }
+      const EA_L = EA / L;
+      const EI_L = EI / L;
+      const EI_L2 = EI / (L * L);
+      const EI_L3 = EI / (L * L * L);
+      const kl = [
+        [EA_L, 0, 0, -EA_L, 0, 0],
+        [0, 12 * EI_L3, 6 * EI_L2, 0, -12 * EI_L3, 6 * EI_L2],
+        [0, 6 * EI_L2, 4 * EI_L, 0, -6 * EI_L2, 2 * EI_L],
+        [-EA_L, 0, 0, EA_L, 0, 0],
+        [0, -12 * EI_L3, -6 * EI_L2, 0, 12 * EI_L3, -6 * EI_L2],
+        [0, 6 * EI_L2, 2 * EI_L, 0, -6 * EI_L2, 4 * EI_L],
+      ];
+      const fl = Array(6).fill(0);
+      for (let i = 0; i < 6; i++) {
+        let sum = 0;
+        for (let j = 0; j < 6; j++) sum += kl[i][j] * ul[j];
+        fl[i] = sum;
+      }
+      // Axial positive in tension (member elongation).
+      const axial = fl[3];
+      const shear = Math.max(Math.abs(fl[1]), Math.abs(fl[4]));
+      const moment = Math.max(Math.abs(fl[2]), Math.abs(fl[5]));
+      if (![axial, shear, moment].every(Number.isFinite)) return null;
+      forces.set(member.id, { axial, shear, moment });
+    }
+    return forces;
+  }
+
+  function analyzeModel(modelNodes, modelMembers, modelLoadId, mode = analysisMode) {
+    const diagnostics = diagnoseModel(modelNodes, modelMembers);
+    diagnostics.analysisMode = mode;
+    if (mode === "frame") diagnostics.stickDepth = stickDepth;
+    const activeIds = new Set();
+    for (const node of modelNodes) {
+      if (node.role) activeIds.add(node.id);
+    }
+    for (const member of modelMembers) {
+      activeIds.add(member.i);
+      activeIds.add(member.j);
+    }
+    const activeNodes = modelNodes.filter((node) => activeIds.has(node.id));
+    const activeDiagnostics = diagnoseModel(activeNodes, modelMembers);
+    diagnostics.activeJoints = activeNodes.length;
+    diagnostics.activeFreeJoints = activeNodes.filter((node) => !node.role).length;
+    diagnostics.activeDeterminacy = activeDiagnostics.determinacy;
+    diagnostics.activeDisconnected = activeDiagnostics.disconnected;
+
+    if (modelMembers.length === 0) {
+      return { unstable: true, forces: null, reason: "No sticks yet.", diagnostics, suggestions: null };
+    }
+    if (activeDiagnostics.disconnected.length) {
+      return {
+        unstable: true,
+        forces: null,
+        reason: `Sticks do not tie these joints into the supports: ${activeDiagnostics.disconnected.join(", ")}.`,
+        diagnostics,
+        suggestions: null,
+      };
+    }
+
+    const assembled = assembleReducedStiffness(activeNodes, modelMembers, mode);
+    const { free, index, ndof, reducedK, dofsPerNode } = assembled;
+    diagnostics.freeDofs = free.length;
+    diagnostics.fixedDofs = ndof - free.length;
+
+    const F = Array(ndof).fill(0);
+    if (modelLoadId != null) {
+      const li = index.get(modelLoadId);
+      if (li != null) F[li * dofsPerNode + 1] = -1;
+    }
+
+    const reducedF = free.map((dof) => F[dof]);
+    const solved = solveSystem(reducedK, reducedF);
+    if (!solved) {
+      const suggestion = mode === "truss" ? suggestBraces(activeNodes, modelMembers, maxStickLength) : null;
+      diagnostics.suggestions = suggestion;
+      return {
+        unstable: true,
+        forces: null,
+        reason: mechanismReason(activeDiagnostics, suggestion, mode),
+        diagnostics,
+        suggestions: suggestion,
+      };
+    }
+
+    const u = Array(ndof).fill(0);
+    free.forEach((dof, i) => { u[dof] = solved[i]; });
+    const maxU = u.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
+    diagnostics.maxDisplacement = maxU;
+    if (u.some((value) => !Number.isFinite(value) || Math.abs(value) > DISPLACEMENT_LIMIT)) {
+      const suggestion = mode === "truss" ? suggestBraces(activeNodes, modelMembers, maxStickLength) : null;
+      diagnostics.suggestions = suggestion;
+      return {
+        unstable: true,
+        forces: null,
+        reason: "Computed displacements blew up; the bridge is effectively unstable."
+          + (suggestion ? ` Try adding brace stick(s) ${suggestion.label}.` : ""),
+        diagnostics,
+        suggestions: suggestion,
+      };
+    }
+
+    let forces;
+    if (mode === "frame") {
+      forces = frameMemberForces(activeNodes, modelMembers, index, u, assembled.EA, assembled.EI);
+      if (!forces) {
         return {
           unstable: true,
           forces: null,
           reason: "Non-finite member force; the bridge is effectively unstable.",
           diagnostics,
+          suggestions: null,
         };
       }
-      forces.set(member.id, axial);
+    } else {
+      forces = new Map();
+      for (const member of modelMembers) {
+        const ia = index.get(member.i);
+        const ib = index.get(member.j);
+        const a = activeNodes[ia];
+        const b = activeNodes[ib];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const length = Math.hypot(dx, dy);
+        if (length < 1e-9) {
+          forces.set(member.id, { axial: 0, shear: 0, moment: 0 });
+          continue;
+        }
+        const c = dx / length;
+        const s = dy / length;
+        const elongation = c * (u[ib * 2] - u[ia * 2]) + s * (u[ib * 2 + 1] - u[ia * 2 + 1]);
+        const axial = elongation / length;
+        if (!Number.isFinite(axial)) {
+          return {
+            unstable: true,
+            forces: null,
+            reason: "Non-finite member force; the bridge is effectively unstable.",
+            diagnostics,
+            suggestions: null,
+          };
+        }
+        forces.set(member.id, { axial, shear: 0, moment: 0 });
+      }
     }
-    return { unstable: false, forces, reason: "", diagnostics };
+    return { unstable: false, forces, reason: "", diagnostics, suggestions: null };
   }
 
   function solve() {
@@ -1131,25 +1499,57 @@
     return !result.unstable && loadId != null && result.forces != null;
   }
 
+  function forceRecord(member) {
+    const raw = result.forces ? result.forces.get(member.id) : null;
+    if (raw == null) return { axial: 0, shear: 0, moment: 0 };
+    if (typeof raw === "number") return { axial: raw, shear: 0, moment: 0 };
+    return raw;
+  }
+
   function maxAbsForce() {
     if (!showForces()) return 0;
     let max = 0;
-    for (const value of result.forces.values()) max = Math.max(max, Math.abs(value));
+    for (const value of result.forces.values()) {
+      const axial = typeof value === "number" ? value : value.axial;
+      max = Math.max(max, Math.abs(axial));
+    }
     return max;
   }
 
   function memberStyle(member) {
-    if (!showForces()) return { color: color.tan, width: 4.5, kind: "unloaded", text: "" };
-    const value = result.forces.get(member.id) || 0;
+    if (!showForces()) return { color: color.tan, width: 4.5, kind: "unloaded", text: "", value: 0, moment: 0 };
+    const record = forceRecord(member);
+    const value = record.axial;
     const magnitude = Math.abs(value);
+    const momentText = analysisMode === "frame" && Math.abs(record.moment) >= NEAR_ZERO
+      ? ` · M ${record.moment.toFixed(2)}`
+      : "";
     if (magnitude < NEAR_ZERO) {
-      return { color: color.tan, width: MIN_WIDTH, kind: "unloaded", text: "0.00 unloaded", value };
+      const kind = analysisMode === "frame" && Math.abs(record.moment) >= NEAR_ZERO ? "bending" : "unloaded";
+      const text = kind === "bending"
+        ? `0.00 axial${momentText}`
+        : "0.00 unloaded";
+      return { color: color.tan, width: MIN_WIDTH, kind, text, value, moment: record.moment };
     }
     const width = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, MAX_WIDTH * (magnitude / Math.max(maxAbsForce(), NEAR_ZERO))));
     if (value > 0) {
-      return { color: color.tension, width, kind: "tension", text: `${value.toFixed(2)} tension`, value };
+      return {
+        color: color.tension,
+        width,
+        kind: "tension",
+        text: `${value.toFixed(2)} tension${momentText}`,
+        value,
+        moment: record.moment,
+      };
     }
-    return { color: color.compression, width, kind: "compression", text: `${value.toFixed(2)} compression`, value };
+    return {
+      color: color.compression,
+      width,
+      kind: "compression",
+      text: `${value.toFixed(2)} compression${momentText}`,
+      value,
+      moment: record.moment,
+    };
   }
 
   function modelStatus() {
@@ -1158,7 +1558,40 @@
     }
     if (result.unstable) return result.reason || UNSTABLE_MSG;
     if (loadId == null) return NO_LOAD_MSG;
-    return "Solved. Hover a stick to read its force. Positive is tension.";
+    if (analysisMode === "frame") {
+      return "Solved as a frame (rigid joints, bending included). Hover a stick for axial force and moment.";
+    }
+    return "Solved as a pin truss. Hover a stick to read its force. Positive is tension.";
+  }
+
+  function syncAnalysisUi() {
+    const isFrame = analysisMode === "frame";
+    analysisSwitch.setAttribute("aria-checked", isFrame ? "true" : "false");
+    analysisSwitch.setAttribute(
+      "aria-label",
+      isFrame ? "Frame analysis with bending (on)" : "Frame analysis with bending (off)"
+    );
+    for (const side of analysisSides) {
+      side.dataset.active = side.dataset.side === analysisMode ? "true" : "false";
+    }
+    stickDepthField.hidden = !isFrame;
+    stickDepthInput.value = String(stickDepth);
+  }
+
+  function setAnalysisMode(mode, { announce = true } = {}) {
+    if (mode !== "truss" && mode !== "frame") return;
+    if (mode === analysisMode) {
+      syncAnalysisUi();
+      return;
+    }
+    analysisMode = mode;
+    if (announce) {
+      note = mode === "frame"
+        ? "Frame mode: joints resist bending (non-traditional / not a pure truss)."
+        : "Truss mode: pin joints, axial force only.";
+    }
+    syncAnalysisUi();
+    refresh();
   }
 
   function renderStatus() {
@@ -1182,7 +1615,9 @@
       return;
     }
     const loaded = nodeById(loadId);
-    blurbEl.textContent = `Downward load 1 at ${loaded ? loaded.label : "a joint"}.`;
+    blurbEl.textContent = analysisMode === "frame"
+      ? `Frame analysis · downward load 1 at ${loaded ? loaded.label : "a joint"} · stick depth ${formatInches(stickDepth)}.`
+      : `Truss analysis · downward load 1 at ${loaded ? loaded.label : "a joint"}.`;
     const rows = [...members].sort((a, b) => memberName(a).localeCompare(memberName(b)));
     for (const member of rows) {
       const style = memberStyle(member);
@@ -1194,10 +1629,12 @@
       const name = document.createElement("span");
       name.textContent = memberName(member);
       const value = document.createElement("span");
-      value.textContent = style.kind === "unloaded" ? "0.00" : style.value.toFixed(2);
+      if (style.kind === "unloaded") value.textContent = "0.00";
+      else if (analysisMode === "frame") value.textContent = `${style.value.toFixed(2)} / ${Math.abs(style.moment).toFixed(2)}`;
+      else value.textContent = style.value.toFixed(2);
       const kind = document.createElement("span");
       kind.className = "kind";
-      kind.textContent = style.kind;
+      kind.textContent = analysisMode === "frame" ? `${style.kind} / |M|` : style.kind;
       row.append(swatch, name, value, kind);
       listEl.append(row);
     }
@@ -1211,11 +1648,13 @@
   function buildSnapshot() {
     const loadNode = loadId != null ? nodeById(loadId) : null;
     return {
-      version: 2,
+      version: 3,
       bridgeLength: roundNum(bridgeLength),
       spanLength: roundNum(spanLength),
       gridSize: roundNum(gridSize),
       maxStickLength: roundNum(maxStickLength),
+      stickDepth: roundNum(stickDepth),
+      analysisMode,
       load: loadNode ? loadNode.label : null,
       loadId,
       unstable: result.unstable,
@@ -1232,13 +1671,15 @@
       sticks: [...members].sort((a, b) => memberName(a).localeCompare(memberName(b))).map((member) => {
         const a = nodeById(member.i);
         const b = nodeById(member.j);
-        const force = result.forces ? result.forces.get(member.id) : null;
+        const force = result.forces ? forceRecord(member) : null;
         return {
           name: memberName(member),
           from: a ? a.label : member.i,
           to: b ? b.label : member.j,
           length: a && b ? roundNum(memberLength(a, b)) : null,
-          force: force == null ? null : roundNum(force),
+          force: force == null ? null : roundNum(force.axial),
+          moment: force == null ? null : roundNum(force.moment),
+          shear: force == null ? null : roundNum(force.shear),
           id: member.id,
           i: member.i,
           j: member.j,
@@ -1269,6 +1710,8 @@
     spanInput.value = String(spanLength);
     gridInput.value = String(gridSize);
     stickInput.value = String(maxStickLength);
+    stickDepthInput.value = String(stickDepth);
+    syncAnalysisUi();
   }
 
   function applySnapshot(snapshot) {
@@ -1277,9 +1720,12 @@
     const span = Number(snapshot.spanLength);
     const grid = Number(snapshot.gridSize);
     const stick = Number(snapshot.maxStickLength);
+    const depth = snapshot.stickDepth == null ? stickDepth : Number(snapshot.stickDepth);
+    const mode = snapshot.analysisMode === "frame" ? "frame" : "truss";
     if (![bridge, span, grid, stick].every((value) => Number.isFinite(value) && value > 0)) {
       throw new Error("bridgeLength, spanLength, gridSize, and maxStickLength must be positive numbers.");
     }
+    if (!Number.isFinite(depth) || depth <= 0) throw new Error("stickDepth must be a positive number.");
     if (span > bridge) throw new Error("Span is longer than the bridge length.");
     if (stick < grid) throw new Error("Stick length must be at least one grid step.");
     if (!Array.isArray(snapshot.joints) || !Array.isArray(snapshot.sticks)) {
@@ -1333,6 +1779,8 @@
     spanLength = span;
     gridSize = grid;
     maxStickLength = stick;
+    stickDepth = depth;
+    analysisMode = mode;
     nodes = restoredNodes;
     members = restoredMembers;
     loadId = restoredLoadId;
@@ -1357,6 +1805,7 @@
       node.y = Number(joint.y);
     }
     syncDimensionInputs();
+    syncAnalysisUi();
     errorEl.hidden = true;
     errorEl.textContent = "";
     markDimensionValidity({});
@@ -1401,6 +1850,7 @@
     const span = Number(spanInput.value);
     const grid = Number(gridInput.value);
     const stick = Number(stickInput.value);
+    const depth = Number(stickDepthInput.value);
     if (!Number.isFinite(bridge) || !Number.isFinite(span) || bridge <= 0 || span <= 0) {
       return { error: "Bridge length and span must be positive numbers." };
     }
@@ -1408,7 +1858,8 @@
     if (!Number.isFinite(grid) || grid <= 0) return { error: "Grid size must be a positive number." };
     if (!Number.isFinite(stick) || stick <= 0) return { error: "Stick length must be a positive number." };
     if (stick + 1e-9 < grid) return { error: "Stick length must be at least one grid step." };
-    return { bridge, span, grid, stick };
+    if (!Number.isFinite(depth) || depth <= 0) return { error: "Stick depth must be a positive number." };
+    return { bridge, span, grid, stick, depth };
   }
 
   function markDimensionValidity(parsed) {
@@ -1416,19 +1867,23 @@
     const span = Number(spanInput.value);
     const grid = Number(gridInput.value);
     const stick = Number(stickInput.value);
+    const depth = Number(stickDepthInput.value);
     const bridgeBad = !Number.isFinite(bridge) || bridge <= 0;
     const spanBad = !Number.isFinite(span) || span <= 0 || (Number.isFinite(bridge) && span > bridge);
     const gridBad = !Number.isFinite(grid) || grid <= 0;
     const stickBad = !Number.isFinite(stick) || stick <= 0 || (Number.isFinite(grid) && stick < grid);
+    const depthBad = !Number.isFinite(depth) || depth <= 0;
     bridgeInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && bridgeBad);
     spanInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && spanBad);
     gridInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && gridBad);
     stickInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && stickBad);
+    stickDepthInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && depthBad);
     if (!parsed.error) {
       bridgeInput.removeAttribute("aria-invalid");
       spanInput.removeAttribute("aria-invalid");
       gridInput.removeAttribute("aria-invalid");
       stickInput.removeAttribute("aria-invalid");
+      stickDepthInput.removeAttribute("aria-invalid");
     }
   }
 
@@ -1447,7 +1902,8 @@
     const spanChanged = Math.abs(parsed.span - spanLength) > 1e-12;
     const gridChanged = Math.abs(parsed.grid - gridSize) > 1e-12;
     const stickChanged = Math.abs(parsed.stick - maxStickLength) > 1e-12;
-    if (!bridgeChanged && !spanChanged && !gridChanged && !stickChanged) return;
+    const depthChanged = Math.abs(parsed.depth - stickDepth) > 1e-12;
+    if (!bridgeChanged && !spanChanged && !gridChanged && !stickChanged && !depthChanged) return;
     if (bridgeChanged) {
       const scale = parsed.bridge / bridgeLength;
       if (Math.abs(scale - 1) > 1e-12) {
@@ -1462,6 +1918,7 @@
     spanLength = parsed.span;
     gridSize = parsed.grid;
     maxStickLength = parsed.stick;
+    stickDepth = parsed.depth;
     note = "";
     positionSupports();
     if (bridgeChanged || spanChanged) camera.fitted = false;
@@ -2406,6 +2863,7 @@
     }
 
     drawPreview();
+    drawBraceSuggestions();
     for (const node of nodes) if (node.role) drawSupport(node);
     for (const node of nodes) drawJoint(node);
     for (const node of nodes) drawLabel(node);
@@ -2417,6 +2875,26 @@
     emptyEl.hidden = !isEmpty();
   }
 
+  function drawBraceSuggestions() {
+    if (analysisMode !== "truss") return;
+    const suggestion = result.suggestions || (result.diagnostics && result.diagnostics.suggestions);
+    if (!suggestion || !suggestion.sticks || !suggestion.sticks.length) return;
+    ctx.save();
+    for (const stick of suggestion.sticks) {
+      const a = nodeById(stick.i) || nodes.find((n) => n.label === stick.from);
+      const b = nodeById(stick.j) || nodes.find((n) => n.label === stick.to);
+      if (!a || !b) continue;
+      strokeWorld(a.x, a.y, b.x, b.y, "rgba(28, 79, 138, 0.7)", 2.5, [6, 5]);
+      const mid = worldToScreen((a.x + b.x) / 2, (a.y + b.y) / 2);
+      ctx.font = "600 12px sans-serif";
+      ctx.fillStyle = color.load;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(`+${stick.name}`, mid.x, mid.y - 4);
+    }
+    ctx.restore();
+  }
+
   function resize() {
     if (camera.fitted) syncViewFromCamera();
     draw();
@@ -2425,6 +2903,13 @@
   modeButtons.forEach((button) => {
     button.addEventListener("click", () => setMode(button.dataset.mode));
   });
+  analysisSwitch.addEventListener("click", () => {
+    setAnalysisMode(analysisMode === "frame" ? "truss" : "frame");
+  });
+  for (const side of analysisSides) {
+    side.style.cursor = "pointer";
+    side.addEventListener("click", () => setAnalysisMode(side.dataset.side));
+  }
   document.getElementById("fit-view").addEventListener("click", () => {
     fitCamera();
     note = "View fitted to the bridge.";
@@ -2469,7 +2954,7 @@
     paramsFocused = false;
     renderParams();
   });
-  for (const input of [bridgeInput, spanInput, gridInput, stickInput]) {
+  for (const input of [bridgeInput, spanInput, gridInput, stickInput, stickDepthInput]) {
     input.addEventListener("input", scheduleApply);
     input.addEventListener("change", () => {
       clearTimeout(inputTimer);
@@ -2525,6 +3010,7 @@
     resolveIntersections,
     mergeNearbyJoints,
     refresh,
+    setAnalysisMode,
   };
 })();
 
