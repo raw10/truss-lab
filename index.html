@@ -91,6 +91,74 @@
 
     #clear { margin-left: 4px; }
 
+    .analysis-toggle {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .analysis-toggle > .label {
+      font-size: 0.78rem;
+      letter-spacing: 0.01em;
+      color: var(--muted);
+    }
+
+    .analysis-toggle .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+    }
+
+    .analysis-toggle .toggle-side {
+      font-size: 0.88rem;
+      color: var(--muted);
+      user-select: none;
+    }
+
+    .analysis-toggle .toggle-side[data-active="true"] {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    #analysis-switch {
+      position: relative;
+      width: 44px;
+      height: 26px;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid #cbbba6;
+      background: #efe4d4;
+      box-shadow: inset 0 1px 2px rgba(42, 36, 28, 0.08);
+      flex: 0 0 auto;
+    }
+
+    #analysis-switch:hover { background: #f4ebe0; }
+
+    #analysis-switch[aria-checked="true"] {
+      background: #2a241c;
+      border-color: #2a241c;
+    }
+
+    #analysis-switch .knob {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fffaf3;
+      box-shadow: 0 1px 2px rgba(42, 36, 28, 0.2);
+      transition: transform 160ms ease;
+      pointer-events: none;
+    }
+
+    #analysis-switch[aria-checked="true"] .knob {
+      transform: translateX(18px);
+      background: #fff;
+    }
+
     .dims {
       display: flex;
       flex-wrap: wrap;
@@ -345,9 +413,15 @@
       <button type="button" id="fit-view">Fit</button>
       <button type="button" id="clear">Clear</button>
     </div>
-    <div class="modes" role="group" aria-label="Analysis model">
-      <button type="button" data-analysis="truss" aria-pressed="true">Truss</button>
-      <button type="button" data-analysis="frame" aria-pressed="false">Frame</button>
+    <div class="analysis-toggle">
+      <span class="label">Analysis</span>
+      <span class="toggle-row">
+        <span class="toggle-side" data-side="truss" data-active="true">Truss</span>
+        <button type="button" id="analysis-switch" role="switch" aria-checked="false" aria-label="Frame analysis with bending">
+          <span class="knob" aria-hidden="true"></span>
+        </button>
+        <span class="toggle-side" data-side="frame" data-active="false">Frame</span>
+      </span>
     </div>
     <div class="dims">
       <label class="field">
@@ -454,7 +528,8 @@
   const stickDepthInput = document.getElementById("stick-depth");
   const stickDepthField = document.getElementById("stick-depth-field");
   const modeButtons = [...document.querySelectorAll("[data-mode]")];
-  const analysisButtons = [...document.querySelectorAll("[data-analysis]")];
+  const analysisSwitch = document.getElementById("analysis-switch");
+  const analysisSides = [...document.querySelectorAll(".analysis-toggle .toggle-side")];
   let paramsFocused = false;
 
   const color = {
@@ -1490,20 +1565,31 @@
   }
 
   function syncAnalysisUi() {
-    for (const button of analysisButtons) {
-      button.setAttribute("aria-pressed", button.dataset.analysis === analysisMode ? "true" : "false");
+    const isFrame = analysisMode === "frame";
+    analysisSwitch.setAttribute("aria-checked", isFrame ? "true" : "false");
+    analysisSwitch.setAttribute(
+      "aria-label",
+      isFrame ? "Frame analysis with bending (on)" : "Frame analysis with bending (off)"
+    );
+    for (const side of analysisSides) {
+      side.dataset.active = side.dataset.side === analysisMode ? "true" : "false";
     }
-    stickDepthField.hidden = analysisMode !== "frame";
+    stickDepthField.hidden = !isFrame;
     stickDepthInput.value = String(stickDepth);
   }
 
-  function setAnalysisMode(mode) {
+  function setAnalysisMode(mode, { announce = true } = {}) {
     if (mode !== "truss" && mode !== "frame") return;
-    if (mode === analysisMode) return;
+    if (mode === analysisMode) {
+      syncAnalysisUi();
+      return;
+    }
     analysisMode = mode;
-    note = mode === "frame"
-      ? "Frame mode: joints resist bending (non-traditional / not a pure truss)."
-      : "Truss mode: pin joints, axial force only.";
+    if (announce) {
+      note = mode === "frame"
+        ? "Frame mode: joints resist bending (non-traditional / not a pure truss)."
+        : "Truss mode: pin joints, axial force only.";
+    }
     syncAnalysisUi();
     refresh();
   }
@@ -2817,9 +2903,13 @@
   modeButtons.forEach((button) => {
     button.addEventListener("click", () => setMode(button.dataset.mode));
   });
-  analysisButtons.forEach((button) => {
-    button.addEventListener("click", () => setAnalysisMode(button.dataset.analysis));
+  analysisSwitch.addEventListener("click", () => {
+    setAnalysisMode(analysisMode === "frame" ? "truss" : "frame");
   });
+  for (const side of analysisSides) {
+    side.style.cursor = "pointer";
+    side.addEventListener("click", () => setAnalysisMode(side.dataset.side));
+  }
   document.getElementById("fit-view").addEventListener("click", () => {
     fitCamera();
     note = "View fitted to the bridge.";
