@@ -1622,7 +1622,7 @@
     const value = record.axial;
     const magnitude = Math.abs(value);
     const momentText = analysisMode === "frame" && Math.abs(record.moment) >= NEAR_ZERO
-      ? ` · M ${record.moment.toFixed(2)}`
+      ? ` · Moment ${record.moment.toFixed(2)}`
       : "";
     if (magnitude < NEAR_ZERO) {
       const kind = analysisMode === "frame" && Math.abs(record.moment) >= NEAR_ZERO ? "bending" : "unloaded";
@@ -1734,7 +1734,7 @@
       else value.textContent = style.value.toFixed(2);
       const kind = document.createElement("span");
       kind.className = "kind";
-      kind.textContent = analysisMode === "frame" ? `${style.kind} / |M|` : style.kind;
+      kind.textContent = analysisMode === "frame" ? `${style.kind} / Moment` : style.kind;
       row.append(swatch, name, value, kind);
       listEl.append(row);
     }
