@@ -89,6 +89,14 @@
       color: var(--paper);
     }
 
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    button:disabled:hover { background: var(--button); }
+
     #clear { margin-left: 4px; }
 
     .analysis-toggle {
@@ -494,6 +502,8 @@
       <button type="button" data-mode="move" aria-pressed="false">Move joint</button>
       <button type="button" data-mode="load" aria-pressed="false">Set load</button>
       <button type="button" data-mode="delete" aria-pressed="false">Delete</button>
+      <button type="button" id="undo" title="Undo (Ctrl+Z)" disabled>Undo</button>
+      <button type="button" id="redo" title="Redo (Ctrl+Y)" disabled>Redo</button>
       <button type="button" id="fit-view">Fit</button>
       <button type="button" id="clear">Clear</button>
     </div>
@@ -614,6 +624,8 @@
   const modeButtons = [...document.querySelectorAll("[data-mode]")];
   const analysisSwitch = document.getElementById("analysis-switch");
   const analysisSides = [...document.querySelectorAll(".analysis-toggle .toggle-side")];
+  const undoButton = document.getElementById("undo");
+  const redoButton = document.getElementById("redo");
   let paramsFocused = false;
 
   const color = {
@@ -650,6 +662,10 @@
   const activePointers = new Map();
   let pinch = null;
   let inputTimer = 0;
+  const MAX_HISTORY = 80;
+  let historyPast = [];
+  let historyFuture = [];
+  let historyRestoring = false;
 
   function cssVar(name, fallback) {
     const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -1920,6 +1936,126 @@
     }
   }
 
+  function cloneHistoryValue(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function historyState() {
+    return {
+      bridgeLength,
+      spanLength,
+      gridSize,
+      maxStickLength,
+      stickDepth,
+      analysisMode,
+      loadId,
+      nextId,
+      nextLetter,
+      nodes: nodes.map((node) => ({
+        id: node.id,
+        x: node.x,
+        y: node.y,
+        label: node.label,
+        role: node.role || null,
+      })),
+      members: members.map((member) => ({
+        id: member.id,
+        i: member.i,
+        j: member.j,
+      })),
+    };
+  }
+
+  function historyStatesEqual(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  function syncHistoryButtons() {
+    undoButton.disabled = historyPast.length <= 1;
+    redoButton.disabled = historyFuture.length === 0;
+  }
+
+  function commitHistory() {
+    if (historyRestoring) return;
+    const state = historyState();
+    const last = historyPast[historyPast.length - 1];
+    if (last && historyStatesEqual(last, state)) {
+      syncHistoryButtons();
+      return;
+    }
+    historyPast.push(cloneHistoryValue(state));
+    while (historyPast.length > MAX_HISTORY) historyPast.shift();
+    historyFuture = [];
+    syncHistoryButtons();
+  }
+
+  function restoreHistoryState(state) {
+    historyRestoring = true;
+    try {
+      bridgeLength = state.bridgeLength;
+      spanLength = state.spanLength;
+      gridSize = state.gridSize;
+      maxStickLength = state.maxStickLength;
+      stickDepth = state.stickDepth;
+      analysisMode = state.analysisMode === "frame" ? "frame" : "truss";
+      loadId = state.loadId == null ? null : state.loadId;
+      nextId = state.nextId;
+      nextLetter = state.nextLetter;
+      nodes = state.nodes.map((node) => {
+        const restored = {
+          id: node.id,
+          x: node.x,
+          y: node.y,
+          label: node.label,
+        };
+        if (node.role === "pin" || node.role === "roller") restored.role = node.role;
+        return restored;
+      });
+      members = state.members.map((member) => ({
+        id: member.id,
+        i: member.i,
+        j: member.j,
+      }));
+      placeStart = null;
+      placePreview = null;
+      dragEnd = null;
+      dragMoved = false;
+      hoverId = null;
+      positionSupports();
+      for (const joint of state.nodes) {
+        if (joint.role) continue;
+        const node = nodeById(joint.id);
+        if (!node) continue;
+        node.x = joint.x;
+        node.y = joint.y;
+      }
+      syncDimensionInputs();
+      syncAnalysisUi();
+      refresh();
+    } finally {
+      historyRestoring = false;
+      syncHistoryButtons();
+    }
+  }
+
+  function undoEdit() {
+    if (historyPast.length <= 1) return;
+    const current = historyPast.pop();
+    historyFuture.push(current);
+    restoreHistoryState(cloneHistoryValue(historyPast[historyPast.length - 1]));
+    note = "Undid last edit.";
+    renderStatus();
+  }
+
+  function redoEdit() {
+    if (!historyFuture.length) return;
+    const state = historyFuture.pop();
+    historyPast.push(cloneHistoryValue(state));
+    restoreHistoryState(cloneHistoryValue(state));
+    note = "Redid edit.";
+    renderStatus();
+  }
+
   function refresh() {
     solve();
     renderStatus();
@@ -1927,6 +2063,8 @@
     renderParams();
     draw();
     persistDesign();
+    if (!historyRestoring) commitHistory();
+    else syncHistoryButtons();
   }
 
   function readDimensions() {
@@ -2794,8 +2932,9 @@
       }
       ctx.fillRect(x, y, w, h);
     };
-    // Paper halo behind the marker for contrast on dense sticks.
-    ctx.fillStyle = "rgba(255, 250, 243, 0.92)";
+    // Keep the marker visible without fully covering stick widths underneath.
+    ctx.globalAlpha = 0.58;
+    ctx.fillStyle = "rgba(255, 250, 243, 0.55)";
     fillRoundRect(p.x - shaftW / 2 - 3, shaftTop - 3, shaftW + 6, shaftBottom - shaftTop + 6, 4);
     ctx.beginPath();
     ctx.moveTo(p.x, tipY + 3);
@@ -2820,7 +2959,7 @@
     const labelX = p.x + headW + 6;
     const labelY = (shaftTop + shaftBottom) / 2;
     ctx.lineWidth = 4;
-    ctx.strokeStyle = "rgba(255, 250, 243, 0.95)";
+    ctx.strokeStyle = "rgba(255, 250, 243, 0.7)";
     ctx.strokeText("1", labelX, labelY);
     ctx.fillStyle = color.load;
     ctx.fillText("1", labelX, labelY);
@@ -3026,9 +3165,11 @@
     renderStatus();
     draw();
   });
+  undoButton.addEventListener("click", undoEdit);
+  redoButton.addEventListener("click", redoEdit);
   document.getElementById("clear").addEventListener("click", () => {
     if (!isEmpty()) {
-      const ok = window.confirm("Clear the entire bridge? This cannot be undone.");
+      const ok = window.confirm("Clear the entire bridge? You can Undo afterward.");
       if (!ok) return;
     }
     resetModel();
@@ -3045,6 +3186,26 @@
     camera.fitted = false;
     canvas.style.cursor = modeCursor();
     refresh();
+  });
+  window.addEventListener("keydown", (event) => {
+    const target = event.target;
+    const typing = target && (
+      target === paramsEl ||
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.isContentEditable
+    );
+    if (typing) return;
+    const key = event.key.toLowerCase();
+    const mod = event.ctrlKey || event.metaKey;
+    if (!mod) return;
+    if (key === "z" && !event.shiftKey) {
+      event.preventDefault();
+      undoEdit();
+    } else if (key === "y" || (key === "z" && event.shiftKey)) {
+      event.preventDefault();
+      redoEdit();
+    }
   });
   document.getElementById("apply-params").addEventListener("click", applyParamsText);
   document.getElementById("copy-params").addEventListener("click", async () => {
@@ -3121,6 +3282,14 @@
     mergeNearbyJoints,
     refresh,
     setAnalysisMode,
+    undoEdit,
+    redoEdit,
+    getHistory: () => ({
+      past: historyPast.length,
+      future: historyFuture.length,
+      canUndo: historyPast.length > 1,
+      canRedo: historyFuture.length > 0,
+    }),
   };
 })();
 
