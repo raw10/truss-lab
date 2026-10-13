@@ -1622,7 +1622,7 @@
     const value = record.axial;
     const magnitude = Math.abs(value);
     const momentText = analysisMode === "frame" && Math.abs(record.moment) >= NEAR_ZERO
-      ? ` · M ${record.moment.toFixed(2)}`
+      ? ` · Moment ${record.moment.toFixed(2)}`
       : "";
     if (magnitude < NEAR_ZERO) {
       const kind = analysisMode === "frame" && Math.abs(record.moment) >= NEAR_ZERO ? "bending" : "unloaded";
