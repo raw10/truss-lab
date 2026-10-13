@@ -394,9 +394,18 @@
       font-size: 0.82rem;
     }
 
+    #force-columns {
+      margin: 0 0 2px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      line-height: 1.35;
+    }
+
+    #force-columns[hidden] { display: none !important; }
+
     .force-row {
       display: grid;
-      grid-template-columns: 0.7rem 2.2rem minmax(3.4rem, auto) 1fr;
+      grid-template-columns: 0.7rem 2.2rem 1fr;
       gap: 6px;
       align-items: center;
       padding: 4px 0;
@@ -405,7 +414,10 @@
       font-size: 0.86rem;
     }
 
-    .force-row .kind { color: var(--muted); }
+    .force-row .values {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
 
     button:focus-visible,
     input:focus-visible {
@@ -574,6 +586,7 @@
           <span><i class="swatch tan"></i> Unloaded</span>
         </p>
         <p id="force-blurb"></p>
+        <p id="force-columns" hidden></p>
         <div id="force-list"></div>
       </section>
       <section class="results-block params" aria-labelledby="params-heading">
@@ -613,6 +626,7 @@
   const statusEl = document.getElementById("status");
   const errorEl = document.getElementById("form-error");
   const blurbEl = document.getElementById("force-blurb");
+  const columnsEl = document.getElementById("force-columns");
   const listEl = document.getElementById("force-list");
   const paramsEl = document.getElementById("params");
   const bridgeInput = document.getElementById("bridge-length");
@@ -1702,6 +1716,8 @@
 
   function renderPanel() {
     listEl.replaceChildren();
+    columnsEl.hidden = true;
+    columnsEl.textContent = "";
     if (isEmpty()) {
       blurbEl.textContent = "No sticks yet.";
       return;
@@ -1718,6 +1734,10 @@
     blurbEl.textContent = analysisMode === "frame"
       ? `Frame analysis · downward load 1 at ${loaded ? loaded.label : "a joint"} · stick depth ${formatInches(stickDepth)}.`
       : `Truss analysis · downward load 1 at ${loaded ? loaded.label : "a joint"}.`;
+    columnsEl.hidden = false;
+    columnsEl.textContent = analysisMode === "frame"
+      ? "Numbers: tension (+) or compression (−) / bending moment."
+      : "Numbers: tension (+) or compression (−).";
     const rows = [...members].sort((a, b) => memberName(a).localeCompare(memberName(b)));
     for (const member of rows) {
       const style = memberStyle(member);
@@ -1726,16 +1746,21 @@
       const swatch = document.createElement("i");
       swatch.className = "swatch";
       swatch.style.background = style.color;
+      swatch.title = style.kind;
       const name = document.createElement("span");
       name.textContent = memberName(member);
       const value = document.createElement("span");
-      if (style.kind === "unloaded") value.textContent = "0.00";
-      else if (analysisMode === "frame") value.textContent = `${style.value.toFixed(2)} / ${Math.abs(style.moment).toFixed(2)}`;
-      else value.textContent = style.value.toFixed(2);
-      const kind = document.createElement("span");
-      kind.className = "kind";
-      kind.textContent = analysisMode === "frame" ? `${style.kind} / Moment` : style.kind;
-      row.append(swatch, name, value, kind);
+      value.className = "values";
+      if (style.kind === "unloaded" || style.kind === "bending") {
+        value.textContent = analysisMode === "frame"
+          ? `0.00 / ${Math.abs(style.moment).toFixed(2)}`
+          : "0.00";
+      } else if (analysisMode === "frame") {
+        value.textContent = `${style.value.toFixed(2)} / ${Math.abs(style.moment).toFixed(2)}`;
+      } else {
+        value.textContent = style.value.toFixed(2);
+      }
+      row.append(swatch, name, value);
       listEl.append(row);
     }
   }
