@@ -2778,26 +2778,52 @@
 
   function drawLoad(node) {
     const p = worldToScreen(node.x, node.y);
-    const tip = p.y - 10;
-    const tail = p.y - 46;
+    const tipY = p.y - 4;
+    const headH = 26;
+    const headW = 16;
+    const shaftW = 8;
+    const shaftTop = tipY - headH - 52;
+    const shaftBottom = tipY - headH + 2;
     ctx.save();
-    ctx.strokeStyle = color.load;
-    ctx.fillStyle = color.load;
-    ctx.lineWidth = 2;
+    const fillRoundRect = (x, y, w, h, r) => {
+      if (typeof ctx.roundRect === "function") {
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, r);
+        ctx.fill();
+        return;
+      }
+      ctx.fillRect(x, y, w, h);
+    };
+    // Paper halo behind the marker for contrast on dense sticks.
+    ctx.fillStyle = "rgba(255, 250, 243, 0.92)";
+    fillRoundRect(p.x - shaftW / 2 - 3, shaftTop - 3, shaftW + 6, shaftBottom - shaftTop + 6, 4);
     ctx.beginPath();
-    ctx.moveTo(p.x, tail);
-    ctx.lineTo(p.x, tip);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(p.x, tip + 1);
-    ctx.lineTo(p.x - 6, tip - 11);
-    ctx.lineTo(p.x + 6, tip - 11);
+    ctx.moveTo(p.x, tipY + 3);
+    ctx.lineTo(p.x - headW - 3, tipY - headH - 2);
+    ctx.lineTo(p.x + headW + 3, tipY - headH - 2);
     ctx.closePath();
     ctx.fill();
-    ctx.font = "600 13px sans-serif";
+
+    ctx.fillStyle = color.load;
+    ctx.strokeStyle = color.load;
+    fillRoundRect(p.x - shaftW / 2, shaftTop, shaftW, Math.max(8, shaftBottom - shaftTop), 3);
+    ctx.beginPath();
+    ctx.moveTo(p.x, tipY);
+    ctx.lineTo(p.x - headW, tipY - headH);
+    ctx.lineTo(p.x + headW, tipY - headH);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.font = "800 20px sans-serif";
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
-    ctx.fillText("1", p.x + 10, (tail + tip) / 2);
+    const labelX = p.x + headW + 6;
+    const labelY = (shaftTop + shaftBottom) / 2;
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(255, 250, 243, 0.95)";
+    ctx.strokeText("1", labelX, labelY);
+    ctx.fillStyle = color.load;
+    ctx.fillText("1", labelX, labelY);
     ctx.restore();
   }
 
