@@ -1,6 +1,6 @@
 # Truss Lab
 
-Interactive popsicle-stick bridge lab: place joints, connect sticks, set a load, and read axial member forces (tension / compression) as a fraction of one downward load.
+Interactive popsicle-stick bridge lab: place sticks, rotate their ends (snap to grid or crossings), set a load, and read axial member forces (tension / compression) as a fraction of one downward load.
 
 ## Live site
 
