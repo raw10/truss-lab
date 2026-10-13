@@ -333,7 +333,7 @@
 <body>
   <header>
     <h1>Popsicle Bridge</h1>
-    <p>Pin-jointed sticks. Axial force only, as a fraction of one downward load.</p>
+    <p>Pin-jointed sticks. Pinch with two fingers to zoom; joints stay the same screen size.</p>
   </header>
 
   <div class="toolbar">
@@ -343,6 +343,7 @@
       <button type="button" data-mode="move" aria-pressed="false">Move</button>
       <button type="button" data-mode="load" aria-pressed="false">Set load</button>
       <button type="button" data-mode="delete" aria-pressed="false">Delete</button>
+      <button type="button" id="fit-view">Fit</button>
       <button type="button" id="clear">Clear</button>
     </div>
     <div class="dims">
@@ -416,6 +417,11 @@
     const NEAR_ZERO = 1e-3;
     const STORAGE_KEY = "truss-lab:v1";
     const DISPLACEMENT_LIMIT = 1e9;
+    const JOINT_DRAW_PX = 7;
+    const JOINT_HALO_PX = 14;
+    const JOINT_HIT_PX = 30;
+    const MIN_VIEW_SCALE = 4;
+    const MAX_VIEW_SCALE = 400;
 
     const canvas = document.getElementById("canvas");
     const ctx = canvas.getContext("2d");
@@ -461,6 +467,9 @@
     let note = "";
     let result = { unstable: true, forces: null, reason: "", diagnostics: null };
     let view = null;
+    let camera = { scale: 40, cx: 5, cy: 2.75, fitted: false };
+    const activePointers = new Map();
+    let pinch = null;
     let inputTimer = 0;
 
     function cssVar(name, fallback) {
@@ -1193,6 +1202,7 @@
       maxStickLength = parsed.stick;
       note = "";
       positionSupports();
+      if (bridgeChanged || spanChanged) camera.fitted = false;
       if (bridgeChanged || gridChanged) resnapFreeJoints();
       if (stickChanged || bridgeChanged || gridChanged) {
         for (const member of members) {
@@ -1232,61 +1242,105 @@
       draw();
     }
 
-    function ensureView() {
-      const w = canvas.clientWidth || 1;
-      const h = canvas.clientHeight || 1;
+    function contentBounds() {
       let minX = 0;
       let maxX = bridgeLength;
       let minY = 0;
-      let maxY = 0;
+      let maxY = Math.max(bridgeLength * 0.35, gridSize * 4);
       for (const node of nodes) {
         minX = Math.min(minX, node.x);
         maxX = Math.max(maxX, node.x);
         minY = Math.min(minY, node.y);
         maxY = Math.max(maxY, node.y);
       }
-      const minH = bridgeLength * 0.55;
-      if (maxY - minY < minH) maxY = minY + minH;
+      return { minX, maxX, minY, maxY };
+    }
+
+    function fitCamera() {
+      const w = canvas.clientWidth || 1;
+      const h = canvas.clientHeight || 1;
+      const bounds = contentBounds();
       const padL = 52;
       const padR = 52;
       const padT = 76;
       const padB = 92;
-      const worldW = Math.max(maxX - minX, 1e-6);
-      const worldH = Math.max(maxY - minY, 1e-6);
+      const worldW = Math.max(bounds.maxX - bounds.minX, gridSize * 2, 1e-6);
+      const worldH = Math.max(bounds.maxY - bounds.minY, gridSize * 2, 1e-6);
       const availW = Math.max(w - padL - padR, 20);
       const availH = Math.max(h - padT - padB, 20);
       const scale = Math.min(availW / worldW, availH / worldH);
-      const drawW = worldW * scale;
-      const drawH = worldH * scale;
+      camera.scale = Math.min(MAX_VIEW_SCALE, Math.max(MIN_VIEW_SCALE, scale));
+      camera.cx = (bounds.minX + bounds.maxX) / 2;
+      camera.cy = (bounds.minY + bounds.maxY) / 2;
+      camera.fitted = true;
+      syncViewFromCamera();
+    }
+
+    function syncViewFromCamera() {
+      const w = canvas.clientWidth || 1;
+      const h = canvas.clientHeight || 1;
       view = {
-        minX,
-        maxY,
-        scale,
-        ox: padL + (availW - drawW) / 2,
-        oy: padT + (availH - drawH) / 2,
+        scale: camera.scale,
+        cx: camera.cx,
+        cy: camera.cy,
+        width: w,
+        height: h,
       };
+      return view;
+    }
+
+    function ensureView() {
+      if (!camera.fitted || !view) fitCamera();
+      else syncViewFromCamera();
       return view;
     }
 
     function worldToScreen(x, y) {
       if (!view) ensureView();
       return {
-        x: view.ox + (x - view.minX) * view.scale,
-        y: view.oy + (view.maxY - y) * view.scale,
+        x: view.width / 2 + (x - view.cx) * view.scale,
+        y: view.height / 2 - (y - view.cy) * view.scale,
       };
     }
 
     function screenToWorld(x, y) {
       if (!view) ensureView();
       return {
-        x: view.minX + (x - view.ox) / view.scale,
-        y: view.maxY - (y - view.oy) / view.scale,
+        x: view.cx + (x - view.width / 2) / view.scale,
+        y: view.cy - (y - view.height / 2) / view.scale,
       };
     }
 
-    function snapRadius() {
+    function canvasPoint(event) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+      };
+    }
+
+    function clampViewScale(scale) {
+      return Math.min(MAX_VIEW_SCALE, Math.max(MIN_VIEW_SCALE, scale));
+    }
+
+    function zoomAt(screenX, screenY, nextScale) {
+      ensureView();
+      const before = screenToWorld(screenX, screenY);
+      camera.scale = clampViewScale(nextScale);
+      syncViewFromCamera();
+      const after = screenToWorld(screenX, screenY);
+      camera.cx += before.x - after.x;
+      camera.cy += before.y - after.y;
+      syncViewFromCamera();
+    }
+
+    function hitRadiusWorld() {
       if (!view) ensureView();
-      return Math.max(16 / view.scale, bridgeLength * 0.02);
+      return JOINT_HIT_PX / view.scale;
+    }
+
+    function snapRadius() {
+      return hitRadiusWorld();
     }
 
     function nearestJoint(world, radius) {
@@ -1300,6 +1354,72 @@
         }
       }
       return best;
+    }
+
+    function nearestJointAtScreen(sx, sy) {
+      ensureView();
+      let best = null;
+      let bestD = JOINT_HIT_PX;
+      for (const node of nodes) {
+        const p = worldToScreen(node.x, node.y);
+        const d = Math.hypot(p.x - sx, p.y - sy);
+        if (d <= bestD) {
+          best = node;
+          bestD = d;
+        }
+      }
+      return best;
+    }
+
+    function pointerDistance(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function pointerMidpoint(a, b) {
+      return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    }
+
+    function beginPinch() {
+      if (activePointers.size < 2) return;
+      const points = [...activePointers.values()];
+      const a = points[0];
+      const b = points[1];
+      if (dragId != null) endMove(true);
+      ensureView();
+      const mid = pointerMidpoint(a, b);
+      const worldMid = screenToWorld(mid.x, mid.y);
+      pinch = {
+        distance: Math.max(pointerDistance(a, b), 1),
+        scale: camera.scale,
+        worldMid,
+      };
+      tooltipEl.hidden = true;
+      note = "Pinch to zoom. Joints stay the same size on screen.";
+      renderStatus();
+    }
+
+    function updatePinch() {
+      if (!pinch || activePointers.size < 2) return;
+      const points = [...activePointers.values()];
+      const a = points[0];
+      const b = points[1];
+      const mid = pointerMidpoint(a, b);
+      const distance = Math.max(pointerDistance(a, b), 1);
+      camera.scale = clampViewScale(pinch.scale * (distance / pinch.distance));
+      syncViewFromCamera();
+      // Keep the world point under the pinch midpoint locked to the current midpoint.
+      camera.cx = pinch.worldMid.x - (mid.x - view.width / 2) / camera.scale;
+      camera.cy = pinch.worldMid.y + (mid.y - view.height / 2) / camera.scale;
+      syncViewFromCamera();
+      draw();
+    }
+
+    function endPinch() {
+      pinch = null;
+      if (!note || note.startsWith("Pinch to zoom")) {
+        note = "";
+        renderStatus();
+      }
     }
 
     function distToSegment(px, py, ax, ay, bx, by) {
@@ -1407,31 +1527,38 @@
       if (jointAtPoint(snapped.x, snapped.y, node.id)) {
         note = "Another joint is already on that grid point.";
         renderStatus();
+        draw();
         return;
       }
       const overflow = connectedStickOverflow(node.id, snapped.x, snapped.y);
       if (overflow) {
         note = `${overflow.name} would be ${formatInches(overflow.length)}; max is ${formatInches(maxStickLength)}.`;
         renderStatus();
+        draw();
         return;
       }
       node.x = snapped.x;
       node.y = snapped.y;
       dragMoved = true;
       note = "";
-      refresh();
+      solve();
+      renderStatus();
+      renderPanel();
+      draw();
     }
 
-    function endMove() {
+    function endMove(quiet) {
       if (dragId == null) return;
       dragId = null;
       canvas.style.cursor = modeCursor();
-      if (!dragMoved) {
+      if (!quiet && !dragMoved) {
         note = "Drag a free joint to move it on the grid.";
         renderStatus();
       }
+      const moved = dragMoved;
       dragMoved = false;
-      draw();
+      if (moved) refresh();
+      else draw();
     }
 
     function setLoad(joint) {
@@ -1440,8 +1567,8 @@
       refresh();
     }
 
-    function deleteAt(sx, sy, world) {
-      const joint = nearestJoint(world, snapRadius());
+    function deleteAt(sx, sy) {
+      const joint = nearestJointAtScreen(sx, sy);
       if (joint) {
         if (joint.role) {
           note = "Supports stay with the span.";
@@ -1465,16 +1592,24 @@
     }
 
     function onPointerDown(event) {
-      if (event.button !== 0) return;
-      const world = screenToWorld(event.offsetX, event.offsetY);
+      if (event.button !== 0 && event.pointerType !== "touch") return;
+      const point = canvasPoint(event);
+      activePointers.set(event.pointerId, point);
+      if (activePointers.size >= 2) {
+        beginPinch();
+        return;
+      }
+      if (pinch) return;
+      ensureView();
+      const world = screenToWorld(point.x, point.y);
       if (mode === "joint") {
         addJoint(world);
         return;
       }
-      const joint = nearestJoint(world, snapRadius());
+      const joint = nearestJointAtScreen(point.x, point.y);
       if (mode === "move") {
         if (!joint) {
-          note = "Click and drag a free joint.";
+          note = "Drag a free joint, or pinch with two fingers to zoom.";
           renderStatus();
           return;
         }
@@ -1501,11 +1636,11 @@
         setLoad(joint);
         return;
       }
-      if (mode === "delete") deleteAt(event.offsetX, event.offsetY, world);
+      if (mode === "delete") deleteAt(point.x, point.y);
     }
 
-    function updateMemberTooltip(event) {
-      const member = memberAt(event.offsetX, event.offsetY);
+    function updateMemberTooltip(sx, sy) {
+      const member = memberAt(sx, sy);
       const id = member ? member.id : null;
       if (id !== hoverId) {
         hoverId = id;
@@ -1530,9 +1665,9 @@
       const height = tooltipEl.offsetHeight;
       const boundsW = canvas.clientWidth;
       const boundsH = canvas.clientHeight;
-      let x = event.offsetX - width / 2;
-      let y = event.offsetY - height - 12;
-      if (y < 8) y = event.offsetY + 16;
+      let x = sx - width / 2;
+      let y = sy - height - 12;
+      if (y < 8) y = sy + 16;
       x = Math.max(8, Math.min(boundsW - width - 8, x));
       y = Math.max(8, Math.min(boundsH - height - 8, y));
       tooltipEl.style.left = `${x}px`;
@@ -1540,16 +1675,46 @@
     }
 
     function onPointerMove(event) {
-      if (dragId != null) {
-        tooltipEl.hidden = true;
-        moveDragTo(screenToWorld(event.offsetX, event.offsetY));
+      if (!activePointers.has(event.pointerId) && event.buttons === 0 && event.pointerType !== "touch") {
+        // Hover only
+        const hover = canvasPoint(event);
+        updateMemberTooltip(hover.x, hover.y);
         return;
       }
-      updateMemberTooltip(event);
+      if (activePointers.has(event.pointerId)) {
+        activePointers.set(event.pointerId, canvasPoint(event));
+      }
+      if (activePointers.size >= 2) {
+        if (!pinch) beginPinch();
+        updatePinch();
+        return;
+      }
+      if (pinch) return;
+      if (dragId != null) {
+        tooltipEl.hidden = true;
+        const point = canvasPoint(event);
+        moveDragTo(screenToWorld(point.x, point.y));
+        return;
+      }
+      const point = canvasPoint(event);
+      updateMemberTooltip(point.x, point.y);
     }
 
-    function onPointerUp() {
-      if (dragId != null) endMove();
+    function onPointerUp(event) {
+      activePointers.delete(event.pointerId);
+      if (activePointers.size < 2 && pinch) endPinch();
+      if (activePointers.size === 0 && dragId != null) endMove();
+      if (event.pointerId != null && canvas.hasPointerCapture?.(event.pointerId)) {
+        try { canvas.releasePointerCapture(event.pointerId); } catch (_) { /* ignore */ }
+      }
+    }
+
+    function onWheel(event) {
+      event.preventDefault();
+      const point = canvasPoint(event);
+      const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+      zoomAt(point.x, point.y, camera.scale * factor);
+      draw();
     }
 
     function drawGrid() {
@@ -1700,13 +1865,13 @@
       const p = worldToScreen(node.x, node.y);
       if (stickStart === node.id || dragId === node.id) {
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, JOINT_HALO_PX, 0, Math.PI * 2);
         ctx.strokeStyle = color.load;
         ctx.lineWidth = 2;
         ctx.stroke();
       }
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 5.5, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, JOINT_DRAW_PX, 0, Math.PI * 2);
       ctx.fillStyle = color.paper;
       ctx.fill();
       ctx.lineWidth = 2;
@@ -1869,11 +2034,18 @@
     }
 
     function resize() {
+      if (camera.fitted) syncViewFromCamera();
       draw();
     }
 
     modeButtons.forEach((button) => {
       button.addEventListener("click", () => setMode(button.dataset.mode));
+    });
+    document.getElementById("fit-view").addEventListener("click", () => {
+      fitCamera();
+      note = "View fitted to the bridge.";
+      renderStatus();
+      draw();
     });
     document.getElementById("clear").addEventListener("click", () => {
       const pin = nodes.find((node) => node.role === "pin");
@@ -1889,6 +2061,9 @@
       nextLetter = 2;
       tooltipEl.hidden = true;
       paramsFocused = false;
+      activePointers.clear();
+      pinch = null;
+      camera.fitted = false;
       canvas.style.cursor = modeCursor();
       refresh();
     });
@@ -1928,8 +2103,9 @@
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("pointerleave", () => {
-      if (dragId != null) return;
+      if (dragId != null || pinch) return;
       hoverId = null;
       tooltipEl.hidden = true;
       draw();
@@ -1964,6 +2140,9 @@
       analyzeModel,
       applySnapshot,
       buildSnapshot,
+      fitCamera,
+      getCamera: () => ({ ...camera }),
+      zoomAt,
     };
   </script>
 </body>
