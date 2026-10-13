@@ -339,7 +339,7 @@
   <div class="toolbar">
     <div class="modes">
       <button type="button" data-mode="stick" aria-pressed="true">Add stick</button>
-      <button type="button" data-mode="move" aria-pressed="false">Move end</button>
+      <button type="button" data-mode="move" aria-pressed="false">Move joint</button>
       <button type="button" data-mode="load" aria-pressed="false">Set load</button>
       <button type="button" data-mode="delete" aria-pressed="false">Delete</button>
       <button type="button" id="fit-view">Fit</button>
@@ -628,11 +628,89 @@
     return Math.abs(cross) < 1e-6 * scale * scale && dot < 0;
   }
 
+  function mergeRadiusWorld() {
+    ensureView();
+    return Math.max(gridSize * 0.35, SNAP_PX / view.scale);
+  }
+
+  function dedupeMembers() {
+    const seen = new Set();
+    members = members.filter((member) => {
+      if (member.i === member.j) return false;
+      const key = member.i < member.j ? `${member.i}-${member.j}` : `${member.j}-${member.i}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function mergeJointInto(keep, remove) {
+    if (!keep || !remove || keep.id === remove.id) return keep || remove;
+    if (remove.role) return null;
+    for (const member of members) {
+      if (member.i === remove.id) member.i = keep.id;
+      if (member.j === remove.id) member.j = keep.id;
+    }
+    dedupeMembers();
+    if (loadId === remove.id) loadId = keep.id;
+    nodes = nodes.filter((node) => node.id !== remove.id);
+    return keep;
+  }
+
+  function mergeNearbyJoints() {
+    const radius = mergeRadiusWorld();
+    let guard = 0;
+    while (guard++ < 80) {
+      let pair = null;
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const a = nodes[i];
+          const b = nodes[j];
+          if (a.role && b.role) continue;
+          if (dist(a, b) > radius + 1e-12) continue;
+          pair = { a, b };
+          break;
+        }
+        if (pair) break;
+      }
+      if (!pair) break;
+      let keep = pair.a;
+      let remove = pair.b;
+      if (remove.role && !keep.role) {
+        keep = pair.b;
+        remove = pair.a;
+      } else if (!keep.role && !remove.role) {
+        if (degreeOf(remove.id) > degreeOf(keep.id) ||
+            (degreeOf(remove.id) === degreeOf(keep.id) && remove.id < keep.id)) {
+          keep = pair.b;
+          remove = pair.a;
+        }
+      }
+      if (remove.role) break;
+      const mid = {
+        x: keep.role ? keep.x : (keep.x + remove.x) / 2,
+        y: keep.role ? keep.y : (keep.y + remove.y) / 2,
+      };
+      if (!keep.role) {
+        keep.x = mid.x;
+        keep.y = mid.y;
+      }
+      mergeJointInto(keep, remove);
+    }
+    pruneOrphanJoints();
+  }
+
   function ensureJoint(x, y, labelHint) {
     const existing = jointAtPoint(x, y);
     if (existing) return existing;
-    const near = nearestJoint({ x, y }, Math.max(1e-6, (SNAP_PX * 0.25) / Math.max(camera.scale, 1)));
-    if (near && !near.role && pointsEqual(near, { x, y }, 1e-5)) return near;
+    const near = nearestJoint({ x, y }, mergeRadiusWorld());
+    if (near) {
+      if (!near.role) {
+        near.x = x;
+        near.y = y;
+      }
+      return near;
+    }
     const node = {
       id: nextId++,
       x,
@@ -650,6 +728,26 @@
       used.add(member.j);
     }
     nodes = nodes.filter((node) => node.role || used.has(node.id) || node.id === loadId);
+  }
+
+  function incidentOthers(nodeId) {
+    const others = [];
+    for (const member of members) {
+      if (member.i !== nodeId && member.j !== nodeId) continue;
+      const other = nodeById(otherEnd(member, nodeId));
+      if (other) others.push({ member, other });
+    }
+    return others;
+  }
+
+  function jointPositionValid(nodeId, x, y) {
+    const point = { x, y };
+    for (const { other } of incidentOthers(nodeId)) {
+      const d = dist(other, point);
+      if (d > maxStickLength + 1e-9) return false;
+      if (d < MIN_STICK) return false;
+    }
+    return true;
   }
 
   function splitMemberAt(member, point) {
@@ -1056,7 +1154,7 @@
 
   function modelStatus() {
     if (isEmpty()) {
-      return `Add sticks up to ${formatInches(maxStickLength)}. Ends snap to the ${formatInches(gridSize)} grid or crossings.`;
+      return `Add sticks up to ${formatInches(maxStickLength)}. Ends snap to the ${formatInches(gridSize)} grid or crossings; nearby joints merge.`;
     }
     if (result.unstable) return result.reason || UNSTABLE_MSG;
     if (loadId == null) return NO_LOAD_MSG;
@@ -1639,6 +1737,7 @@
     }
     members.push({ id: nextId++, i: a.id, j: b.id });
     resolveIntersections();
+    mergeNearbyJoints();
     note = "";
     refresh();
     return true;
@@ -1696,43 +1795,88 @@
     commitStick(start, end);
   }
 
+  function pickJointMove(raw, nodeId) {
+    ensureView();
+    const incident = incidentOthers(nodeId);
+    let preferred = { x: raw.x, y: raw.y };
+    if (incident.length === 1) {
+      preferred = clampToLength(incident[0].other, preferred, maxStickLength);
+    }
+    const snapWorld = mergeRadiusWorld();
+    const excludeMemberIds = incident.map((item) => item.member.id);
+    const candidates = [];
+    const push = (point, kind) => {
+      if (!point) return;
+      if (!jointPositionValid(nodeId, point.x, point.y)) return;
+      candidates.push({ x: point.x, y: point.y, kind });
+    };
+
+    push(snapPoint(preferred.x, preferred.y), "grid");
+    for (let gx = -1; gx <= 1; gx++) {
+      for (let gy = -1; gy <= 1; gy++) {
+        push({
+          x: snapCoord(preferred.x) + gx * gridSize,
+          y: snapCoord(preferred.y) + gy * gridSize,
+        }, "grid");
+      }
+    }
+    for (const node of nodes) {
+      if (node.id === nodeId) continue;
+      push(node, "joint");
+    }
+    for (const member of members) {
+      if (excludeMemberIds.includes(member.id)) continue;
+      const a = nodeById(member.i);
+      const b = nodeById(member.j);
+      if (!a || !b) continue;
+      const close = closestPointOnSegment(preferred, a, b);
+      push(close, "cross");
+    }
+    if (jointPositionValid(nodeId, preferred.x, preferred.y)) {
+      candidates.push({ x: preferred.x, y: preferred.y, kind: "free" });
+    }
+
+    let best = null;
+    let bestD = Infinity;
+    for (const candidate of candidates) {
+      const d = dist(candidate, preferred);
+      if (d < bestD) {
+        best = candidate;
+        bestD = d;
+      }
+    }
+    if (!best) return null;
+    if (best.kind !== "free" && bestD > snapWorld && best.kind !== "joint") {
+      if (jointPositionValid(nodeId, preferred.x, preferred.y)) {
+        return { x: preferred.x, y: preferred.y, kind: "free" };
+      }
+    }
+    if (best.kind === "joint" && bestD > snapWorld) {
+      if (jointPositionValid(nodeId, preferred.x, preferred.y)) {
+        return { x: preferred.x, y: preferred.y, kind: "free" };
+      }
+    }
+    return best;
+  }
+
   function beginRotate(hit, pointerId) {
-    const member = hit.member;
-    const end = hit.end;
-    const movingId = member[end];
-    const pivotId = otherEnd(member, movingId);
-    const moving = nodeById(movingId);
-    const pivot = nodeById(pivotId);
-    if (!moving || !pivot) return false;
+    const moving = hit.node || nodeById(hit.member[hit.end]);
+    if (!moving) return false;
     if (moving.role) {
-      note = "Support ends stay with the span. Rotate the other end of the stick.";
+      note = "Supports stay with the span. Move a free joint instead.";
       renderStatus();
       return false;
     }
-    let currentMovingId = movingId;
-    if (degreeOf(movingId) > 1) {
-      const neu = {
-        id: nextId++,
-        x: moving.x,
-        y: moving.y,
-        label: indexToLetters(nextLetter++),
-      };
-      nodes.push(neu);
-      member[end] = neu.id;
-      currentMovingId = neu.id;
-    }
-    dragEnd = {
-      memberId: member.id,
-      end,
-      pivotId,
-      movingId: currentMovingId,
-    };
+    dragEnd = { movingId: moving.id };
     dragMoved = false;
     if (pointerId != null && canvas.setPointerCapture) {
       try { canvas.setPointerCapture(pointerId); } catch (_) { /* ignore */ }
     }
     canvas.style.cursor = "grabbing";
-    note = "Rotate this end. Snaps to grid or crossings; length cannot exceed stick length.";
+    const attached = degreeOf(moving.id);
+    note = attached > 1
+      ? `Moving joint ${moving.label} with ${attached} sticks. Nearby joints merge.`
+      : "Move this joint. Snaps to grid, joints, or crossings.";
     renderStatus();
     draw();
     return true;
@@ -1740,11 +1884,15 @@
 
   function updateRotate(world) {
     if (!dragEnd) return;
-    const pivot = nodeById(dragEnd.pivotId);
     const moving = nodeById(dragEnd.movingId);
-    const member = memberById(dragEnd.memberId);
-    if (!pivot || !moving || !member) return;
-    const snapped = pickEndpoint(world, pivot, [member.id]);
+    if (!moving || moving.role) return;
+    const snapped = pickJointMove(world, moving.id);
+    if (!snapped) {
+      note = "That move would make a stick longer than the stick length.";
+      renderStatus();
+      draw();
+      return;
+    }
     if (pointsEqual(moving, snapped)) return;
     moving.x = snapped.x;
     moving.y = snapped.y;
@@ -1758,29 +1906,27 @@
 
   function endRotate(quiet) {
     if (!dragEnd) return;
-    const member = memberById(dragEnd.memberId);
-    const moving = nodeById(dragEnd.movingId);
+    const movingId = dragEnd.movingId;
     dragEnd = null;
     canvas.style.cursor = modeCursor();
     if (!quiet && !dragMoved) {
-      note = "Drag a stick end to rotate or shorten it.";
+      note = "Drag a joint to move it. Attached sticks move with it.";
       renderStatus();
       dragMoved = false;
       draw();
       return;
     }
     dragMoved = false;
-    if (moving) {
-      const existing = jointAtPoint(moving.x, moving.y, moving.id);
-      if (existing && member) {
-        member[member.i === moving.id ? "i" : "j"] = existing.id;
-        if (loadId === moving.id) loadId = existing.id;
-        nodes = nodes.filter((node) => node.id !== moving.id);
-      }
-    }
+    mergeNearbyJoints();
     resolveIntersections();
+    mergeNearbyJoints();
     pruneOrphanJoints();
+    const still = nodeById(movingId);
+    note = still && degreeOf(still.id) > 1
+      ? `Joint ${still.label} carries ${degreeOf(still.id)} sticks.`
+      : "";
     refresh();
+    if (note) renderStatus();
   }
 
   function setLoad(joint) {
@@ -1844,12 +1990,14 @@
 
     if (mode === "move") {
       const endHit = stickEndAtScreen(point.x, point.y);
-      if (!endHit) {
-        note = "Drag a stick end, or pinch with two fingers to zoom.";
+      const jointHit = nearestJointAtScreen(point.x, point.y);
+      const hit = endHit || (jointHit && !jointHit.role ? { node: jointHit } : null);
+      if (!hit) {
+        note = "Drag a joint to move attached sticks, or pinch to zoom.";
         renderStatus();
         return;
       }
-      beginRotate(endHit, event.pointerId);
+      beginRotate(hit, event.pointerId);
       return;
     }
 
@@ -2147,17 +2295,18 @@
 
   function drawRotateGuide() {
     if (!dragEnd || !view) return;
-    const pivot = nodeById(dragEnd.pivotId);
     const moving = nodeById(dragEnd.movingId);
-    if (!pivot || !moving) return;
-    const p = worldToScreen(pivot.x, pivot.y);
+    if (!moving) return;
     ctx.save();
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, maxStickLength * view.scale, 0, Math.PI * 2);
     ctx.strokeStyle = "rgba(28, 79, 138, 0.28)";
     ctx.lineWidth = 1.5;
     ctx.setLineDash([6, 5]);
-    ctx.stroke();
+    for (const { other } of incidentOthers(moving.id)) {
+      const p = worldToScreen(other.x, other.y);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, maxStickLength * view.scale, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -2283,6 +2432,10 @@
     draw();
   });
   document.getElementById("clear").addEventListener("click", () => {
+    if (!isEmpty()) {
+      const ok = window.confirm("Clear the entire bridge? This cannot be undone.");
+      if (!ok) return;
+    }
     resetModel();
     placeStart = null;
     placePreview = null;
@@ -2370,6 +2523,8 @@
     getCamera: () => ({ ...camera }),
     zoomAt,
     resolveIntersections,
+    mergeNearbyJoints,
+    refresh,
   };
 })();
 
