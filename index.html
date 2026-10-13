@@ -469,7 +469,7 @@
   let dragEnd = null;
   let dragMoved = false;
   let note = "";
-  let result = { unstable: true, forces: null, reason: "", diagnostics: null };
+  let result = { unstable: true, forces: null, reason: "", diagnostics: null, suggestions: null };
   let view = null;
   let camera = { scale: 40, cx: 5, cy: 2.75, fitted: false };
   const activePointers = new Map();
@@ -986,35 +986,7 @@
     return x;
   }
 
-  function analyzeModel(modelNodes, modelMembers, modelLoadId) {
-    const diagnostics = diagnoseModel(modelNodes, modelMembers);
-    const activeIds = new Set();
-    for (const node of modelNodes) {
-      if (node.role) activeIds.add(node.id);
-    }
-    for (const member of modelMembers) {
-      activeIds.add(member.i);
-      activeIds.add(member.j);
-    }
-    const activeNodes = modelNodes.filter((node) => activeIds.has(node.id));
-    const activeDiagnostics = diagnoseModel(activeNodes, modelMembers);
-    diagnostics.activeJoints = activeNodes.length;
-    diagnostics.activeFreeJoints = activeNodes.filter((node) => !node.role).length;
-    diagnostics.activeDeterminacy = activeDiagnostics.determinacy;
-    diagnostics.activeDisconnected = activeDiagnostics.disconnected;
-
-    if (modelMembers.length === 0) {
-      return { unstable: true, forces: null, reason: "No sticks yet.", diagnostics };
-    }
-    if (activeDiagnostics.disconnected.length) {
-      return {
-        unstable: true,
-        forces: null,
-        reason: `Sticks do not tie these joints into the supports: ${activeDiagnostics.disconnected.join(", ")}.`,
-        diagnostics,
-      };
-    }
-
+  function assembleReducedStiffness(activeNodes, modelMembers) {
     const count = activeNodes.length;
     const index = new Map(activeNodes.map((node, i) => [node.id, i]));
     const ndof = count * 2;
@@ -1060,8 +1032,126 @@
 
     const free = [];
     for (let i = 0; i < ndof; i++) if (!fixed[i]) free.push(i);
+    const reducedK = free.map((row) => free.map((col) => K[row][col]));
+    return { K, free, index, ndof, reducedK };
+  }
+
+  function stiffnessIsNonsingular(activeNodes, modelMembers) {
+    if (!modelMembers.length) return false;
+    const { reducedK, free } = assembleReducedStiffness(activeNodes, modelMembers);
+    if (!free.length) return true;
+    const probe = Array(free.length).fill(0);
+    probe[0] = 1;
+    return solveSystem(reducedK, probe) != null;
+  }
+
+  function candidateBraceEdges(activeNodes, modelMembers, maxLen) {
+    const connected = new Set();
+    for (const member of modelMembers) {
+      connected.add([member.i, member.j].sort((a, b) => a - b).join(":"));
+    }
+    const edges = [];
+    for (let i = 0; i < activeNodes.length; i++) {
+      for (let j = i + 1; j < activeNodes.length; j++) {
+        const a = activeNodes[i];
+        const b = activeNodes[j];
+        const key = [a.id, b.id].sort((x, y) => x - y).join(":");
+        if (connected.has(key)) continue;
+        const length = dist(a, b);
+        if (length < 1e-9 || length > maxLen + 1e-9) continue;
+        const name = a.label < b.label ? a.label + b.label : b.label + a.label;
+        const freeEnds = (a.role ? 0 : 1) + (b.role ? 0 : 1);
+        edges.push({ i: a.id, j: b.id, name, length, a, b, freeEnds });
+      }
+    }
+    // Prefer interior braces (both ends free), then shorter sticks.
+    edges.sort((p, q) => (q.freeEnds - p.freeEnds) || (p.length - q.length) || p.name.localeCompare(q.name));
+    return edges;
+  }
+
+  function suggestBraces(activeNodes, modelMembers, maxLen) {
+    if (stiffnessIsNonsingular(activeNodes, modelMembers)) return null;
+    const candidates = candidateBraceEdges(activeNodes, modelMembers, maxLen);
+    if (!candidates.length) return null;
+
+    for (const edge of candidates) {
+      const trial = modelMembers.concat([{ i: edge.i, j: edge.j, id: -1 }]);
+      if (stiffnessIsNonsingular(activeNodes, trial)) {
+        return {
+          sticks: [{ from: edge.a.label, to: edge.b.label, name: edge.name, length: edge.length, i: edge.i, j: edge.j }],
+          label: edge.name,
+        };
+      }
+    }
+
+    const limit = Math.min(candidates.length, 14);
+    for (let i = 0; i < limit; i++) {
+      for (let j = i + 1; j < limit; j++) {
+        const e1 = candidates[i];
+        const e2 = candidates[j];
+        const trial = modelMembers.concat([
+          { i: e1.i, j: e1.j, id: -1 },
+          { i: e2.i, j: e2.j, id: -2 },
+        ]);
+        if (stiffnessIsNonsingular(activeNodes, trial)) {
+          const sticks = [
+            { from: e1.a.label, to: e1.b.label, name: e1.name, length: e1.length, i: e1.i, j: e1.j },
+            { from: e2.a.label, to: e2.b.label, name: e2.name, length: e2.length, i: e2.i, j: e2.j },
+          ];
+          return { sticks, label: `${e1.name} + ${e2.name}` };
+        }
+      }
+    }
+    return null;
+  }
+
+  function mechanismReason(activeDiagnostics, suggestion) {
+    const shortBy = activeDiagnostics.determinacy < 0 ? -activeDiagnostics.determinacy : 0;
+    let reason = "Pin-jointed truss is a mechanism (joints carry axial force only; no bending).";
+    if (shortBy) {
+      reason += ` Short ${shortBy} stick(s) for a simple plane truss (m = 2j − 3).`;
+    } else {
+      reason += " Stiffness matrix is singular — missing triangulation or a near-collinear bay.";
+    }
+    if (suggestion) {
+      reason += ` Try adding brace stick(s) ${suggestion.label}.`;
+    }
+    return reason;
+  }
+
+  function analyzeModel(modelNodes, modelMembers, modelLoadId) {
+    const diagnostics = diagnoseModel(modelNodes, modelMembers);
+    const activeIds = new Set();
+    for (const node of modelNodes) {
+      if (node.role) activeIds.add(node.id);
+    }
+    for (const member of modelMembers) {
+      activeIds.add(member.i);
+      activeIds.add(member.j);
+    }
+    const activeNodes = modelNodes.filter((node) => activeIds.has(node.id));
+    const activeDiagnostics = diagnoseModel(activeNodes, modelMembers);
+    diagnostics.activeJoints = activeNodes.length;
+    diagnostics.activeFreeJoints = activeNodes.filter((node) => !node.role).length;
+    diagnostics.activeDeterminacy = activeDiagnostics.determinacy;
+    diagnostics.activeDisconnected = activeDiagnostics.disconnected;
+
+    if (modelMembers.length === 0) {
+      return { unstable: true, forces: null, reason: "No sticks yet.", diagnostics, suggestions: null };
+    }
+    if (activeDiagnostics.disconnected.length) {
+      return {
+        unstable: true,
+        forces: null,
+        reason: `Sticks do not tie these joints into the supports: ${activeDiagnostics.disconnected.join(", ")}.`,
+        diagnostics,
+        suggestions: null,
+      };
+    }
+
+    const { K, free, index, ndof, reducedK } = assembleReducedStiffness(activeNodes, modelMembers);
     diagnostics.freeDofs = free.length;
-    diagnostics.fixedDofs = fixed.filter(Boolean).length;
+    diagnostics.fixedDofs = ndof - free.length;
 
     const F = Array(ndof).fill(0);
     if (modelLoadId != null) {
@@ -1069,15 +1159,18 @@
       if (li != null) F[li * 2 + 1] = -1;
     }
 
-    const reducedK = free.map((row) => free.map((col) => K[row][col]));
     const reducedF = free.map((dof) => F[dof]);
     const solved = solveSystem(reducedK, reducedF);
     if (!solved) {
-      let reason = "Stiffness matrix is singular (mechanism or missing triangulation).";
-      if (activeDiagnostics.determinacy < 0) {
-        reason += ` Short ${-activeDiagnostics.determinacy} stick(s) for a simple plane truss (m = 2j − 3 on active joints).`;
-      }
-      return { unstable: true, forces: null, reason, diagnostics };
+      const suggestion = suggestBraces(activeNodes, modelMembers, maxStickLength);
+      diagnostics.suggestions = suggestion;
+      return {
+        unstable: true,
+        forces: null,
+        reason: mechanismReason(activeDiagnostics, suggestion),
+        diagnostics,
+        suggestions: suggestion,
+      };
     }
 
     const u = Array(ndof).fill(0);
@@ -1085,11 +1178,15 @@
     const maxU = u.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
     diagnostics.maxDisplacement = maxU;
     if (u.some((value) => !Number.isFinite(value) || Math.abs(value) > DISPLACEMENT_LIMIT)) {
+      const suggestion = suggestBraces(activeNodes, modelMembers, maxStickLength);
+      diagnostics.suggestions = suggestion;
       return {
         unstable: true,
         forces: null,
-        reason: "Computed displacements blew up; the bridge is effectively unstable.",
+        reason: "Computed displacements blew up; the bridge is effectively unstable."
+          + (suggestion ? ` Try adding brace stick(s) ${suggestion.label}.` : ""),
         diagnostics,
+        suggestions: suggestion,
       };
     }
 
@@ -1116,11 +1213,12 @@
           forces: null,
           reason: "Non-finite member force; the bridge is effectively unstable.",
           diagnostics,
+          suggestions: null,
         };
       }
       forces.set(member.id, axial);
     }
-    return { unstable: false, forces, reason: "", diagnostics };
+    return { unstable: false, forces, reason: "", diagnostics, suggestions: null };
   }
 
   function solve() {
@@ -2406,6 +2504,7 @@
     }
 
     drawPreview();
+    drawBraceSuggestions();
     for (const node of nodes) if (node.role) drawSupport(node);
     for (const node of nodes) drawJoint(node);
     for (const node of nodes) drawLabel(node);
@@ -2415,6 +2514,25 @@
     }
     drawForceLabels();
     emptyEl.hidden = !isEmpty();
+  }
+
+  function drawBraceSuggestions() {
+    const suggestion = result.suggestions || (result.diagnostics && result.diagnostics.suggestions);
+    if (!suggestion || !suggestion.sticks || !suggestion.sticks.length) return;
+    ctx.save();
+    for (const stick of suggestion.sticks) {
+      const a = nodeById(stick.i) || nodes.find((n) => n.label === stick.from);
+      const b = nodeById(stick.j) || nodes.find((n) => n.label === stick.to);
+      if (!a || !b) continue;
+      strokeWorld(a.x, a.y, b.x, b.y, "rgba(28, 79, 138, 0.7)", 2.5, [6, 5]);
+      const mid = worldToScreen((a.x + b.x) / 2, (a.y + b.y) / 2);
+      ctx.font = "600 12px sans-serif";
+      ctx.fillStyle = color.load;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(`+${stick.name}`, mid.x, mid.y - 4);
+    }
+    ctx.restore();
   }
 
   function resize() {
