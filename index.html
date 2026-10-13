@@ -275,17 +275,17 @@
 
     .results {
       width: min(320px, 38vw);
+      max-width: 100%;
       flex: 0 0 auto;
-      background: var(--paper);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      box-shadow: var(--shadow);
-      padding: 14px 14px 10px;
-      overflow: auto;
       min-height: 0;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 12px;
+      overflow: hidden;
+      background: transparent;
+      border: none;
+      box-shadow: none;
+      padding: 0;
     }
 
     .results h2 {
@@ -298,7 +298,30 @@
     .results-block {
       display: flex;
       flex-direction: column;
+      min-width: 0;
       min-height: 0;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 14px;
+    }
+
+    .results-block.forces {
+      flex: 1 1 48%;
+      overflow: hidden;
+    }
+
+    .results-block.params {
+      flex: 1 1 48%;
+      overflow: hidden;
+    }
+
+    #force-list {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
     }
 
     .params-actions {
@@ -317,6 +340,7 @@
       flex: 1 1 auto;
       min-height: 140px;
       width: 100%;
+      max-width: 100%;
       resize: vertical;
       font: 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
       color: var(--ink);
@@ -325,6 +349,7 @@
       border-radius: 10px;
       padding: 8px 10px;
       white-space: pre;
+      overflow: auto;
       tab-size: 2;
     }
 
@@ -381,20 +406,79 @@
     }
 
     @media (max-width: 800px) {
-      .workspace { flex-direction: column; }
-      .results { width: auto; max-height: 48vh; }
-      .stage { min-height: 260px; }
+      html, body {
+        height: auto;
+        min-height: 100%;
+      }
+
+      body {
+        overflow-x: hidden;
+        overflow-y: auto;
+      }
+
+      .workspace {
+        flex-direction: column;
+        flex: 1 0 auto;
+        min-height: auto;
+        width: 100%;
+        max-width: 100%;
+        overflow: visible;
+      }
+
+      .stage {
+        width: 100%;
+        max-width: 100%;
+        min-height: 50vh;
+        height: 50vh;
+        flex: 0 0 auto;
+      }
+
+      .results {
+        width: 100%;
+        max-width: 100%;
+        flex: 0 0 auto;
+        max-height: none;
+        overflow: visible;
+      }
+
+      .results-block.forces,
+      .results-block.params {
+        flex: 0 0 auto;
+        width: 100%;
+        max-width: 100%;
+        overflow: visible;
+      }
+
+      #force-list {
+        flex: 0 1 auto;
+        max-height: min(40vh, 22rem);
+        overflow: auto;
+      }
+
+      #params {
+        flex: 0 0 auto;
+        min-height: 10rem;
+        height: 12rem;
+        width: 100%;
+        max-width: 100%;
+      }
+
       #clear { margin-left: 0; }
-      #params { min-height: 120px; }
     }
 
     @media (max-width: 520px) {
       header { padding: 12px 12px 0; }
       .toolbar { padding: 12px 12px 0; }
       .status { margin-left: 12px; margin-right: 12px; }
-      .field { flex: 1 1 8rem; }
-      input { width: 100%; }
+      .workspace { padding: 0 12px 16px; }
+      .field { flex: 1 1 8rem; max-width: 100%; }
+      .entry { width: 100%; }
+      input { width: 100%; max-width: 100%; }
       h1 { font-size: 1.25rem; }
+      .force-row {
+        grid-template-columns: 0.7rem 2rem minmax(3rem, auto) minmax(0, 1fr);
+        font-size: 0.82rem;
+      }
     }
   </style>
 </head>
@@ -472,8 +556,8 @@
       <div id="tooltip" class="tooltip" hidden></div>
     </div>
     <aside class="results" aria-label="Analysis and bridge parameters">
-      <div class="results-block">
-        <h2>Member forces</h2>
+      <section class="results-block forces" aria-labelledby="forces-heading">
+        <h2 id="forces-heading">Member forces</h2>
         <p class="legend">
           <span><i class="swatch tension"></i> Tension</span>
           <span><i class="swatch compression"></i> Compression</span>
@@ -481,15 +565,15 @@
         </p>
         <p id="force-blurb"></p>
         <div id="force-list"></div>
-      </div>
-      <div class="results-block" style="flex: 1 1 auto;">
-        <h2>Bridge parameters</h2>
+      </section>
+      <section class="results-block params" aria-labelledby="params-heading">
+        <h2 id="params-heading">Bridge parameters</h2>
         <div class="params-actions">
           <button type="button" id="apply-params">Apply</button>
           <button type="button" id="copy-params">Copy</button>
         </div>
         <textarea id="params" spellcheck="false" aria-label="Bridge parameters as editable text"></textarea>
-      </div>
+      </section>
     </aside>
   </div>
 
