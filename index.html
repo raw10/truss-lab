@@ -2778,46 +2778,52 @@
 
   function drawLoad(node) {
     const p = worldToScreen(node.x, node.y);
-    const tip = p.y - 6;
-    const tail = p.y - 78;
-    const headW = 14;
-    const headH = 24;
+    const tipY = p.y - 4;
+    const headH = 26;
+    const headW = 16;
+    const shaftW = 8;
+    const shaftTop = tipY - headH - 52;
+    const shaftBottom = tipY - headH + 2;
     ctx.save();
-    // Soft halo so the arrow stays readable over sticks/grid.
-    ctx.strokeStyle = "rgba(255, 250, 243, 0.95)";
-    ctx.lineWidth = 10;
-    ctx.lineCap = "round";
+    const fillRoundRect = (x, y, w, h, r) => {
+      if (typeof ctx.roundRect === "function") {
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, r);
+        ctx.fill();
+        return;
+      }
+      ctx.fillRect(x, y, w, h);
+    };
+    // Paper halo behind the marker for contrast on dense sticks.
+    ctx.fillStyle = "rgba(255, 250, 243, 0.92)";
+    fillRoundRect(p.x - shaftW / 2 - 3, shaftTop - 3, shaftW + 6, shaftBottom - shaftTop + 6, 4);
     ctx.beginPath();
-    ctx.moveTo(p.x, tail);
-    ctx.lineTo(p.x, tip + 3);
-    ctx.stroke();
-    ctx.strokeStyle = color.load;
-    ctx.fillStyle = color.load;
-    ctx.lineWidth = 5.5;
-    ctx.beginPath();
-    ctx.moveTo(p.x, tail);
-    ctx.lineTo(p.x, tip + 3);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(p.x, tip + 1);
-    ctx.lineTo(p.x - headW, tip - headH);
-    ctx.lineTo(p.x + headW, tip - headH);
+    ctx.moveTo(p.x, tipY + 3);
+    ctx.lineTo(p.x - headW - 3, tipY - headH - 2);
+    ctx.lineTo(p.x + headW + 3, tipY - headH - 2);
     ctx.closePath();
     ctx.fill();
-    ctx.lineWidth = 2.5;
-    ctx.strokeStyle = "rgba(255, 250, 243, 0.9)";
-    ctx.stroke();
+
+    ctx.fillStyle = color.load;
     ctx.strokeStyle = color.load;
-    ctx.lineWidth = 1.75;
-    ctx.stroke();
-    ctx.font = "800 18px sans-serif";
+    fillRoundRect(p.x - shaftW / 2, shaftTop, shaftW, Math.max(8, shaftBottom - shaftTop), 3);
+    ctx.beginPath();
+    ctx.moveTo(p.x, tipY);
+    ctx.lineTo(p.x - headW, tipY - headH);
+    ctx.lineTo(p.x + headW, tipY - headH);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.font = "800 20px sans-serif";
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
+    const labelX = p.x + headW + 6;
+    const labelY = (shaftTop + shaftBottom) / 2;
     ctx.lineWidth = 4;
     ctx.strokeStyle = "rgba(255, 250, 243, 0.95)";
-    ctx.strokeText("1", p.x + 14, (tail + tip) / 2);
+    ctx.strokeText("1", labelX, labelY);
     ctx.fillStyle = color.load;
-    ctx.fillText("1", p.x + 14, (tail + tip) / 2);
+    ctx.fillText("1", labelX, labelY);
     ctx.restore();
   }
 
