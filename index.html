@@ -609,7 +609,8 @@
         align-items: stretch;
         gap: 10px;
         width: 100%;
-        height: auto !important;
+        /* Definite height so the stage/canvas box is stable before draw. */
+        height: 0 !important;
         min-height: 0 !important;
         max-height: none;
         padding: 0;
@@ -625,14 +626,25 @@
         min-width: 0;
         min-height: 0 !important;
         max-height: none;
+        position: relative;
         break-inside: avoid;
         page-break-inside: avoid;
         box-shadow: none;
       }
 
+      /* JS locks width/height in CSS pixels to match the bitmap 1:1.
+         Avoid percentage sizing here — Chrome print stretches that.
+         object-fit:contain is a safety net if the box aspect still drifts. */
       canvas {
-        width: 100% !important;
-        height: 100% !important;
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: auto !important;
+        height: auto !important;
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+        object-position: top left;
       }
 
       .results {
@@ -825,7 +837,10 @@
   const undoButton = document.getElementById("undo");
   const redoButton = document.getElementById("redo");
   const printMetaEl = document.getElementById("print-meta");
+  const stageEl = canvas.parentElement;
   let paramsFocused = false;
+  let layoutSize = { width: 1, height: 1 };
+  let printCanvasLocked = false;
 
   const color = {
     tension: cssVar("--tension", "#148f45"),
@@ -2505,9 +2520,38 @@
     return { minX, maxX, minY, maxY };
   }
 
+  function isPrintMedia() {
+    return window.matchMedia("print").matches || printCanvasLocked;
+  }
+
+  function measureLayoutSize() {
+    // Prefer the stage content box so print layout is not driven by the
+    // canvas intrinsic bitmap size (which causes Chrome to stretch cells).
+    const w = Math.max(1, Math.round(stageEl.clientWidth || layoutSize.width || 1));
+    const h = Math.max(1, Math.round(stageEl.clientHeight || layoutSize.height || 1));
+    layoutSize = { width: w, height: h };
+    return layoutSize;
+  }
+
+  function lockPrintCanvasSize() {
+    measureLayoutSize();
+    // Explicit CSS pixels matching the bitmap keep Chrome from stretching
+    // the canvas replaced-element differently in X and Y when printing.
+    canvas.style.width = `${layoutSize.width}px`;
+    canvas.style.height = `${layoutSize.height}px`;
+    printCanvasLocked = true;
+  }
+
+  function unlockPrintCanvasSize() {
+    printCanvasLocked = false;
+    canvas.style.width = "";
+    canvas.style.height = "";
+  }
+
   function fitCamera() {
-    const w = canvas.clientWidth || 1;
-    const h = canvas.clientHeight || 1;
+    measureLayoutSize();
+    const w = layoutSize.width;
+    const h = layoutSize.height;
     const bounds = contentBounds();
     const padL = 52;
     const padR = 52;
@@ -2517,6 +2561,7 @@
     const worldH = Math.max(bounds.maxY - bounds.minY, gridSize * 2, 1e-6);
     const availW = Math.max(w - padL - padR, 20);
     const availH = Math.max(h - padT - padB, 20);
+    // One scale for X and Y keeps grid cells square on screen and in print.
     const scale = Math.min(availW / worldW, availH / worldH);
     camera.scale = Math.min(MAX_VIEW_SCALE, Math.max(MIN_VIEW_SCALE, scale));
     camera.cx = (bounds.minX + bounds.maxX) / 2;
@@ -2526,12 +2571,13 @@
   }
 
   function syncViewFromCamera() {
+    measureLayoutSize();
     view = {
       scale: camera.scale,
       cx: camera.cx,
       cy: camera.cy,
-      width: canvas.clientWidth || 1,
-      height: canvas.clientHeight || 1,
+      width: layoutSize.width,
+      height: layoutSize.height,
     };
     return view;
   }
@@ -3387,9 +3433,16 @@
   }
 
   function draw() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const width = Math.max(1, canvas.clientWidth);
-    const height = Math.max(1, canvas.clientHeight);
+    measureLayoutSize();
+    const width = layoutSize.width;
+    const height = layoutSize.height;
+    // Print uses device pixels 1:1 with CSS pixels so the bitmap aspect
+    // matches the laid-out box exactly (avoids Chrome print stretch).
+    const dpr = isPrintMedia() ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+    if (printCanvasLocked) {
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+    }
     const bitmapW = Math.max(1, Math.round(width * dpr));
     const bitmapH = Math.max(1, Math.round(height * dpr));
     if (canvas.width !== bitmapW || canvas.height !== bitmapH) {
@@ -3570,15 +3623,32 @@
   canvas.addEventListener("contextmenu", (event) => event.preventDefault());
   new ResizeObserver(resize).observe(canvas.parentElement);
   window.addEventListener("resize", resize);
-  window.addEventListener("beforeprint", () => {
+  function preparePrintRender() {
     renderPrintMeta();
-    // Refit with isotropic scale after print layout expands the canvas.
+    // Force print layout, then lock CSS size to the stage box before draw.
+    void document.body.offsetHeight;
+    void stageEl.getBoundingClientRect();
+    lockPrintCanvasSize();
     fitCamera();
+    draw();
+  }
+
+  function restoreAfterPrint() {
+    unlockPrintCanvasSize();
     resize();
-  });
-  window.addEventListener("afterprint", () => {
-    resize();
-  });
+  }
+
+  window.addEventListener("beforeprint", preparePrintRender);
+  window.addEventListener("afterprint", restoreAfterPrint);
+  if (window.matchMedia) {
+    const printMq = window.matchMedia("print");
+    const onPrintMq = (event) => {
+      if (event.matches) preparePrintRender();
+      else if (printCanvasLocked) restoreAfterPrint();
+    };
+    if (printMq.addEventListener) printMq.addEventListener("change", onPrintMq);
+    else if (printMq.addListener) printMq.addListener(onPrintMq);
+  }
   window.addEventListener("pagehide", persistDesign);
   window.addEventListener("beforeunload", persistDesign);
 
