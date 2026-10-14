@@ -606,8 +606,7 @@
         display: flex !important;
         flex-direction: row !important;
         flex: 1 1 auto;
-        align-items: flex-start;
-        justify-content: flex-start;
+        align-items: stretch;
         gap: 10px;
         width: 100%;
         height: auto !important;
@@ -620,16 +619,20 @@
       }
 
       .stage {
-        flex: 0 0 auto;
-        aspect-ratio: 1 / 1;
+        flex: 1 1 auto;
         width: auto;
         height: auto !important;
+        min-width: 0;
         min-height: 0 !important;
-        max-width: calc(100% - 290px);
-        max-height: 100%;
+        max-height: none;
         break-inside: avoid;
         page-break-inside: avoid;
         box-shadow: none;
+      }
+
+      canvas {
+        width: 100% !important;
+        height: 100% !important;
       }
 
       .results {
@@ -641,7 +644,6 @@
         min-height: 0;
         max-height: none;
         flex: 0 0 auto;
-        align-self: flex-start;
         overflow: visible !important;
         break-inside: avoid;
         page-break-inside: avoid;
@@ -823,9 +825,7 @@
   const undoButton = document.getElementById("undo");
   const redoButton = document.getElementById("redo");
   const printMetaEl = document.getElementById("print-meta");
-  const stageEl = canvas.parentElement;
   let paramsFocused = false;
-  let printStageSize = null;
 
   const color = {
     tension: cssVar("--tension", "#148f45"),
@@ -2106,30 +2106,6 @@
       row.append(th, td);
     }
     printMetaEl.replaceChildren(row);
-  }
-
-  function preparePrintStage() {
-    const workspace = stageEl.parentElement;
-    const results = document.querySelector(".results");
-    const styles = window.getComputedStyle(workspace);
-    const gap = Number.parseFloat(styles.gap) || 10;
-    const availH = Math.max(120, workspace.clientHeight || 0);
-    const availW = Math.max(
-      120,
-      (workspace.clientWidth || 0) - (results ? results.offsetWidth : 0) - gap
-    );
-    const side = Math.floor(Math.max(120, Math.min(availW, availH)));
-    printStageSize = side;
-    stageEl.style.width = `${side}px`;
-    stageEl.style.height = `${side}px`;
-    stageEl.style.flex = "0 0 auto";
-  }
-
-  function clearPrintStage() {
-    printStageSize = null;
-    stageEl.style.width = "";
-    stageEl.style.height = "";
-    stageEl.style.flex = "";
   }
 
   function applySnapshot(snapshot) {
@@ -3596,12 +3572,11 @@
   window.addEventListener("resize", resize);
   window.addEventListener("beforeprint", () => {
     renderPrintMeta();
-    preparePrintStage();
+    // Refit with isotropic scale after print layout expands the canvas.
     fitCamera();
     resize();
   });
   window.addEventListener("afterprint", () => {
-    clearPrintStage();
     resize();
   });
   window.addEventListener("pagehide", persistDesign);
