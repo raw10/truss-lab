@@ -530,34 +530,136 @@
     }
 
     @media print {
-      .params-row,
-      .results-block.params {
-        display: none !important;
+      @page {
+        size: landscape;
+        margin: 0.35in;
       }
 
-      .toolbar,
+      html, body {
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        overflow: hidden;
+        background: #fff;
+      }
+
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .params-row,
+      .results-block.params,
+      .modes,
       .status,
       .params-actions,
-      #form-error {
+      #form-error,
+      #empty,
+      #tooltip {
         display: none !important;
       }
 
-      .results,
+      header {
+        padding: 0 0 4px;
+        flex: 0 0 auto;
+      }
+
+      h1 {
+        font-size: 1.15rem;
+      }
+
+      header p {
+        font-size: 0.8rem;
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: 8px 14px;
+        padding: 4px 0 6px;
+        flex: 0 0 auto;
+        box-shadow: none;
+      }
+
+      .analysis-toggle .toggle-row {
+        min-height: 0;
+      }
+
+      #analysis-switch {
+        box-shadow: none;
+      }
+
+      button {
+        box-shadow: none;
+      }
+
+      input {
+        padding: 4px 8px;
+        background: #fff;
+      }
+
+      .workspace {
+        display: flex !important;
+        flex-direction: row !important;
+        flex: 1 1 auto;
+        align-items: stretch;
+        gap: 10px;
+        width: 100%;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none;
+        padding: 0;
+        overflow: hidden;
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+
+      .stage {
+        flex: 1 1 auto;
+        width: auto;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none;
+        break-inside: avoid;
+        page-break-inside: avoid;
+        box-shadow: none;
+      }
+
+      .results {
+        display: flex;
+        flex-direction: column;
+        width: min(280px, 30%) !important;
+        max-width: 30%;
+        height: auto !important;
+        min-height: 0;
+        max-height: none;
+        flex: 0 0 auto;
+        overflow: visible !important;
+        break-inside: avoid;
+        page-break-inside: avoid;
+        box-shadow: none;
+      }
+
       .results-block.forces,
       #force-list {
         overflow: visible !important;
         max-height: none !important;
+        flex: 0 0 auto;
       }
 
-      .workspace {
-        display: block;
-        height: auto;
+      .force-row {
+        grid-template-columns: 0.7rem minmax(2rem, 2.4rem) minmax(3.2rem, 1fr);
+        font-size: 0.78rem;
+        padding: 3px 0;
       }
 
-      .stage {
-        break-inside: avoid;
-        height: 55vh;
-        min-height: 320px;
+      .force-row.with-moment {
+        grid-template-columns: 0.7rem minmax(2rem, 2.4rem) minmax(2.6rem, 1fr) minmax(2.6rem, 1fr);
+      }
+
+      .force-row.force-head {
+        padding-bottom: 4px;
       }
     }
   </style>
@@ -3429,6 +3531,13 @@
   canvas.addEventListener("contextmenu", (event) => event.preventDefault());
   new ResizeObserver(resize).observe(canvas.parentElement);
   window.addEventListener("resize", resize);
+  window.addEventListener("beforeprint", () => {
+    fitCamera();
+    resize();
+  });
+  window.addEventListener("afterprint", () => {
+    resize();
+  });
   window.addEventListener("pagehide", persistDesign);
   window.addEventListener("beforeunload", persistDesign);
 
