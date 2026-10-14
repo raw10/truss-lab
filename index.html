@@ -571,6 +571,13 @@
           <span class="units">in</span>
         </span>
       </label>
+      <label class="field">
+        <span class="label">Load</span>
+        <span class="entry">
+          <input id="load-kg" type="number" min="0" step="any" value="1" inputmode="decimal" autocomplete="off" title="Downward hanging mass at the load joint">
+          <span class="units">kg</span>
+        </span>
+      </label>
     </div>
     <p id="form-error" class="form-error" role="alert" hidden></p>
   </div>
@@ -641,6 +648,7 @@
   const stickInput = document.getElementById("stick-length");
   const stickDepthInput = document.getElementById("stick-depth");
   const stickDepthField = document.getElementById("stick-depth-field");
+  const loadKgInput = document.getElementById("load-kg");
   const modeButtons = [...document.querySelectorAll("[data-mode]")];
   const analysisSwitch = document.getElementById("analysis-switch");
   const analysisSides = [...document.querySelectorAll(".analysis-toggle .toggle-side")];
@@ -663,7 +671,9 @@
   let gridSize = 0.5;
   let maxStickLength = 4.5;
   let stickDepth = 0.12;
+  let loadKg = 1;
   let analysisMode = "truss"; // "truss" | "frame"
+  const GRAVITY = 9.80665; // m/s² — converts kg mass to newtons
   let nextId = 1;
   let nextLetter = 2;
   let nodes = [];
@@ -749,6 +759,22 @@
   function formatInches(value) {
     const rounded = Math.round(value * 1000) / 1000;
     return `${rounded}"`;
+  }
+
+  function loadScale() {
+    return Math.max(0, loadKg) * GRAVITY;
+  }
+
+  function formatForce(value) {
+    const abs = Math.abs(value);
+    if (abs >= 100) return value.toFixed(0);
+    if (abs >= 10) return value.toFixed(1);
+    return value.toFixed(2);
+  }
+
+  function formatLoadKg(value = loadKg) {
+    const rounded = Math.round(value * 1000) / 1000;
+    return `${rounded} kg`;
   }
 
   function memberName(member) {
@@ -1639,17 +1665,21 @@
   function memberStyle(member) {
     if (!showForces()) return { color: color.tan, width: 4.5, kind: "unloaded", text: "", value: 0, moment: 0 };
     const record = forceRecord(member);
-    const value = record.axial;
-    const magnitude = Math.abs(value);
-    const momentText = analysisMode === "frame" && Math.abs(record.moment) >= NEAR_ZERO
-      ? ` · Moment ${record.moment.toFixed(2)}`
+    const scale = loadScale();
+    const unitAxial = record.axial;
+    const unitMoment = record.moment;
+    const value = unitAxial * scale;
+    const moment = unitMoment * scale;
+    const magnitude = Math.abs(unitAxial);
+    const momentText = analysisMode === "frame" && Math.abs(unitMoment) >= NEAR_ZERO
+      ? ` · Moment ${formatForce(moment)} N·in`
       : "";
     if (magnitude < NEAR_ZERO) {
-      const kind = analysisMode === "frame" && Math.abs(record.moment) >= NEAR_ZERO ? "bending" : "unloaded";
+      const kind = analysisMode === "frame" && Math.abs(unitMoment) >= NEAR_ZERO ? "bending" : "unloaded";
       const text = kind === "bending"
-        ? `0.00 axial${momentText}`
-        : "0.00 unloaded";
-      return { color: color.tan, width: MIN_WIDTH, kind, text, value, moment: record.moment };
+        ? `0 N axial${momentText}`
+        : "0 N unloaded";
+      return { color: color.tan, width: MIN_WIDTH, kind, text, value, moment };
     }
     const width = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, MAX_WIDTH * (magnitude / Math.max(maxAbsForce(), NEAR_ZERO))));
     if (value > 0) {
@@ -1657,18 +1687,18 @@
         color: color.tension,
         width,
         kind: "tension",
-        text: `${value.toFixed(2)} tension${momentText}`,
+        text: `${formatForce(value)} N tension${momentText}`,
         value,
-        moment: record.moment,
+        moment,
       };
     }
     return {
       color: color.compression,
       width,
       kind: "compression",
-      text: `${value.toFixed(2)} compression${momentText}`,
+      text: `${formatForce(value)} N compression${momentText}`,
       value,
-      moment: record.moment,
+      moment,
     };
   }
 
@@ -1737,13 +1767,14 @@
       return;
     }
     const loaded = nodeById(loadId);
+    const weightN = loadScale();
     blurbEl.textContent = analysisMode === "frame"
-      ? `Frame analysis · downward load 1 at ${loaded ? loaded.label : "a joint"} · stick depth ${formatInches(stickDepth)}.`
-      : `Truss analysis · downward load 1 at ${loaded ? loaded.label : "a joint"}.`;
+      ? `Frame analysis · ${formatLoadKg()} (${formatForce(weightN)} N) at ${loaded ? loaded.label : "a joint"} · stick depth ${formatInches(stickDepth)}.`
+      : `Truss analysis · ${formatLoadKg()} (${formatForce(weightN)} N) at ${loaded ? loaded.label : "a joint"}.`;
     columnsEl.hidden = false;
     columnsEl.textContent = analysisMode === "frame"
-      ? "Numbers: tension (+) or compression (−) / bending moment."
-      : "Numbers: tension (+) or compression (−).";
+      ? "Numbers: tension (+) or compression (−) in N / bending moment in N·in."
+      : "Numbers: tension (+) or compression (−) in N.";
     const rows = [...members].sort((a, b) => memberName(a).localeCompare(memberName(b)));
     for (const member of rows) {
       const style = memberStyle(member);
@@ -1757,14 +1788,14 @@
       name.textContent = memberName(member);
       const value = document.createElement("span");
       value.className = "values";
-      if (style.kind === "unloaded" || style.kind === "bending") {
-        value.textContent = analysisMode === "frame"
-          ? `0.00 / ${Math.abs(style.moment).toFixed(2)}`
-          : "0.00";
+      if (style.kind === "unloaded") {
+        value.textContent = analysisMode === "frame" ? "0 / 0" : "0";
+      } else if (style.kind === "bending") {
+        value.textContent = `0 / ${formatForce(Math.abs(style.moment))}`;
       } else if (analysisMode === "frame") {
-        value.textContent = `${style.value.toFixed(2)} / ${Math.abs(style.moment).toFixed(2)}`;
+        value.textContent = `${formatForce(style.value)} / ${formatForce(Math.abs(style.moment))}`;
       } else {
-        value.textContent = style.value.toFixed(2);
+        value.textContent = formatForce(style.value);
       }
       row.append(swatch, name, value);
       listEl.append(row);
@@ -1785,6 +1816,7 @@
       gridSize: roundNum(gridSize),
       maxStickLength: roundNum(maxStickLength),
       stickDepth: roundNum(stickDepth),
+      loadKg: roundNum(loadKg),
       analysisMode,
       load: loadNode ? loadNode.label : null,
       loadId,
@@ -1799,18 +1831,21 @@
         role: node.role || null,
         id: node.id,
       })),
+      forceUnit: "N",
+      momentUnit: "N·in",
       sticks: [...members].sort((a, b) => memberName(a).localeCompare(memberName(b))).map((member) => {
         const a = nodeById(member.i);
         const b = nodeById(member.j);
         const force = result.forces ? forceRecord(member) : null;
+        const scale = loadScale();
         return {
           name: memberName(member),
           from: a ? a.label : member.i,
           to: b ? b.label : member.j,
           length: a && b ? roundNum(memberLength(a, b)) : null,
-          force: force == null ? null : roundNum(force.axial),
-          moment: force == null ? null : roundNum(force.moment),
-          shear: force == null ? null : roundNum(force.shear),
+          force: force == null ? null : roundNum(force.axial * scale),
+          moment: force == null ? null : roundNum(force.moment * scale),
+          shear: force == null ? null : roundNum(force.shear * scale),
           id: member.id,
           i: member.i,
           j: member.j,
@@ -1842,6 +1877,7 @@
     gridInput.value = String(gridSize);
     stickInput.value = String(maxStickLength);
     stickDepthInput.value = String(stickDepth);
+    loadKgInput.value = String(loadKg);
     syncAnalysisUi();
   }
 
@@ -1852,11 +1888,13 @@
     const grid = Number(snapshot.gridSize);
     const stick = Number(snapshot.maxStickLength);
     const depth = snapshot.stickDepth == null ? stickDepth : Number(snapshot.stickDepth);
+    const mass = snapshot.loadKg == null ? loadKg : Number(snapshot.loadKg);
     const mode = snapshot.analysisMode === "frame" ? "frame" : "truss";
     if (![bridge, span, grid, stick].every((value) => Number.isFinite(value) && value > 0)) {
       throw new Error("bridgeLength, spanLength, gridSize, and maxStickLength must be positive numbers.");
     }
     if (!Number.isFinite(depth) || depth <= 0) throw new Error("stickDepth must be a positive number.");
+    if (!Number.isFinite(mass) || mass < 0) throw new Error("loadKg must be a non-negative number.");
     if (span > bridge) throw new Error("Span is longer than the bridge length.");
     if (stick < grid) throw new Error("Stick length must be at least one grid step.");
     if (!Array.isArray(snapshot.joints) || !Array.isArray(snapshot.sticks)) {
@@ -1911,6 +1949,7 @@
     gridSize = grid;
     maxStickLength = stick;
     stickDepth = depth;
+    loadKg = mass;
     analysisMode = mode;
     nodes = restoredNodes;
     members = restoredMembers;
@@ -1978,6 +2017,7 @@
       gridSize,
       maxStickLength,
       stickDepth,
+      loadKg,
       analysisMode,
       loadId,
       nextId,
@@ -2028,6 +2068,7 @@
       gridSize = state.gridSize;
       maxStickLength = state.maxStickLength;
       stickDepth = state.stickDepth;
+      loadKg = state.loadKg == null ? loadKg : state.loadKg;
       analysisMode = state.analysisMode === "frame" ? "frame" : "truss";
       loadId = state.loadId == null ? null : state.loadId;
       nextId = state.nextId;
@@ -2104,6 +2145,7 @@
     const grid = Number(gridInput.value);
     const stick = Number(stickInput.value);
     const depth = Number(stickDepthInput.value);
+    const mass = Number(loadKgInput.value);
     if (!Number.isFinite(bridge) || !Number.isFinite(span) || bridge <= 0 || span <= 0) {
       return { error: "Bridge length and span must be positive numbers." };
     }
@@ -2112,7 +2154,8 @@
     if (!Number.isFinite(stick) || stick <= 0) return { error: "Stick length must be a positive number." };
     if (stick + 1e-9 < grid) return { error: "Stick length must be at least one grid step." };
     if (!Number.isFinite(depth) || depth <= 0) return { error: "Stick depth must be a positive number." };
-    return { bridge, span, grid, stick, depth };
+    if (!Number.isFinite(mass) || mass < 0) return { error: "Load must be a non-negative number." };
+    return { bridge, span, grid, stick, depth, mass };
   }
 
   function markDimensionValidity(parsed) {
@@ -2121,22 +2164,26 @@
     const grid = Number(gridInput.value);
     const stick = Number(stickInput.value);
     const depth = Number(stickDepthInput.value);
+    const mass = Number(loadKgInput.value);
     const bridgeBad = !Number.isFinite(bridge) || bridge <= 0;
     const spanBad = !Number.isFinite(span) || span <= 0 || (Number.isFinite(bridge) && span > bridge);
     const gridBad = !Number.isFinite(grid) || grid <= 0;
     const stickBad = !Number.isFinite(stick) || stick <= 0 || (Number.isFinite(grid) && stick < grid);
     const depthBad = !Number.isFinite(depth) || depth <= 0;
+    const massBad = !Number.isFinite(mass) || mass < 0;
     bridgeInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && bridgeBad);
     spanInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && spanBad);
     gridInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && gridBad);
     stickInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && stickBad);
     stickDepthInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && depthBad);
+    loadKgInput.toggleAttribute("aria-invalid", Boolean(parsed.error) && massBad);
     if (!parsed.error) {
       bridgeInput.removeAttribute("aria-invalid");
       spanInput.removeAttribute("aria-invalid");
       gridInput.removeAttribute("aria-invalid");
       stickInput.removeAttribute("aria-invalid");
       stickDepthInput.removeAttribute("aria-invalid");
+      loadKgInput.removeAttribute("aria-invalid");
     }
   }
 
@@ -2156,7 +2203,8 @@
     const gridChanged = Math.abs(parsed.grid - gridSize) > 1e-12;
     const stickChanged = Math.abs(parsed.stick - maxStickLength) > 1e-12;
     const depthChanged = Math.abs(parsed.depth - stickDepth) > 1e-12;
-    if (!bridgeChanged && !spanChanged && !gridChanged && !stickChanged && !depthChanged) return;
+    const massChanged = Math.abs(parsed.mass - loadKg) > 1e-12;
+    if (!bridgeChanged && !spanChanged && !gridChanged && !stickChanged && !depthChanged && !massChanged) return;
     if (bridgeChanged) {
       const scale = parsed.bridge / bridgeLength;
       if (Math.abs(scale - 1) > 1e-12) {
@@ -2172,6 +2220,7 @@
     gridSize = parsed.grid;
     maxStickLength = parsed.stick;
     stickDepth = parsed.depth;
+    loadKg = parsed.mass;
     note = "";
     positionSupports();
     if (bridgeChanged || spanChanged) camera.fitted = false;
@@ -2991,9 +3040,10 @@
     const labelY = (shaftTop + shaftBottom) / 2;
     ctx.lineWidth = 4;
     ctx.strokeStyle = "rgba(255, 250, 243, 0.7)";
-    ctx.strokeText("1", labelX, labelY);
+    const loadLabel = formatLoadKg();
+    ctx.strokeText(loadLabel, labelX, labelY);
     ctx.fillStyle = color.load;
-    ctx.fillText("1", labelX, labelY);
+    ctx.fillText(loadLabel, labelX, labelY);
     ctx.restore();
   }
 
@@ -3055,12 +3105,12 @@
 
   function canvasForceLabel(style) {
     if (analysisMode === "frame") {
-      if (style.kind === "unloaded") return "0.00 / 0.00";
-      if (style.kind === "bending") return `0.00 / ${Math.abs(style.moment).toFixed(2)}`;
-      return `${style.value.toFixed(2)} / ${Math.abs(style.moment).toFixed(2)}`;
+      if (style.kind === "unloaded") return "0 / 0";
+      if (style.kind === "bending") return `0 / ${formatForce(Math.abs(style.moment))}`;
+      return `${formatForce(style.value)} / ${formatForce(Math.abs(style.moment))}`;
     }
-    if (style.kind === "unloaded") return "0.00";
-    return style.value.toFixed(2);
+    if (style.kind === "unloaded") return "0";
+    return formatForce(style.value);
   }
 
   function drawForceLabels() {
@@ -3265,7 +3315,7 @@
     paramsFocused = false;
     renderParams();
   });
-  for (const input of [bridgeInput, spanInput, gridInput, stickInput, stickDepthInput]) {
+  for (const input of [bridgeInput, spanInput, gridInput, stickInput, stickDepthInput, loadKgInput]) {
     input.addEventListener("input", scheduleApply);
     input.addEventListener("change", () => {
       clearTimeout(inputTimer);
