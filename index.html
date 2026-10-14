@@ -291,7 +291,7 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
-      overflow: hidden;
+      overflow: auto;
       background: transparent;
       border: none;
       box-shadow: none;
@@ -318,20 +318,20 @@
     }
 
     .results-block.forces {
-      flex: 1 1 48%;
-      overflow: hidden;
+      flex: 0 0 auto;
+      overflow: visible;
     }
 
     .results-block.params {
-      flex: 1 1 48%;
+      flex: 1 1 auto;
       overflow: hidden;
+      min-height: 0;
     }
 
     #force-list {
-      flex: 1 1 auto;
-      min-height: 0;
-      overflow: auto;
-      -webkit-overflow-scrolling: touch;
+      flex: 0 0 auto;
+      overflow: visible;
+      max-height: none;
     }
 
     .params-actions {
@@ -476,9 +476,9 @@
       }
 
       #force-list {
-        flex: 0 1 auto;
-        max-height: min(40vh, 22rem);
-        overflow: auto;
+        flex: 0 0 auto;
+        max-height: none;
+        overflow: visible;
       }
 
       #params {
@@ -502,8 +502,38 @@
       input { width: 100%; max-width: 100%; }
       h1 { font-size: 1.25rem; }
       .force-row {
-        grid-template-columns: 0.7rem 2rem minmax(3rem, auto) minmax(0, 1fr);
+        grid-template-columns: 0.7rem 2rem 1fr;
         font-size: 0.82rem;
+      }
+    }
+
+    @media print {
+      .results-block.params {
+        display: none !important;
+      }
+
+      .toolbar,
+      .status,
+      .params-actions,
+      #form-error {
+        display: none !important;
+      }
+
+      .results,
+      .results-block.forces,
+      #force-list {
+        overflow: visible !important;
+        max-height: none !important;
+      }
+
+      .workspace {
+        display: block;
+      }
+
+      .stage {
+        break-inside: avoid;
+        height: 55vh;
+        min-height: 320px;
       }
     }
   </style>
@@ -674,6 +704,7 @@
   let loadKg = 1;
   let analysisMode = "truss"; // "truss" | "frame"
   const GRAVITY = 9.80665; // m/s² — converts kg mass to newtons
+  const INCH_TO_M = 0.0254; // analysis lengths are inches; moments report in N·m
   let nextId = 1;
   let nextLetter = 2;
   let nodes = [];
@@ -770,6 +801,20 @@
     if (abs >= 100) return value.toFixed(0);
     if (abs >= 10) return value.toFixed(1);
     return value.toFixed(2);
+  }
+
+  function formatMoment(value) {
+    const abs = Math.abs(value);
+    if (abs < 1e-12) return "0";
+    if (abs >= 1) return value.toFixed(2);
+    if (abs >= 0.01) return value.toFixed(3);
+    if (abs >= 0.001) return value.toFixed(4);
+    return value.toExponential(2);
+  }
+
+  function physicalMoment(unitMoment) {
+    // Stiffness assembly uses inch geometry, so unitMoment * N → N·in.
+    return unitMoment * loadScale() * INCH_TO_M;
   }
 
   function formatLoadKg(value = loadKg) {
@@ -1669,10 +1714,10 @@
     const unitAxial = record.axial;
     const unitMoment = record.moment;
     const value = unitAxial * scale;
-    const moment = unitMoment * scale;
+    const moment = physicalMoment(unitMoment);
     const magnitude = Math.abs(unitAxial);
     const momentText = analysisMode === "frame" && Math.abs(unitMoment) >= NEAR_ZERO
-      ? ` · Moment ${formatForce(moment)} N·in`
+      ? ` · Moment ${formatMoment(moment)} N·m`
       : "";
     if (magnitude < NEAR_ZERO) {
       const kind = analysisMode === "frame" && Math.abs(unitMoment) >= NEAR_ZERO ? "bending" : "unloaded";
@@ -1773,7 +1818,7 @@
       : `Truss analysis · ${formatLoadKg()} (${formatForce(weightN)} N) at ${loaded ? loaded.label : "a joint"}.`;
     columnsEl.hidden = false;
     columnsEl.textContent = analysisMode === "frame"
-      ? "Numbers: tension (+) or compression (−) in N / bending moment in N·in."
+      ? "Numbers: tension (+) or compression (−) in N / bending moment in N·m."
       : "Numbers: tension (+) or compression (−) in N.";
     const rows = [...members].sort((a, b) => memberName(a).localeCompare(memberName(b)));
     for (const member of rows) {
@@ -1791,9 +1836,9 @@
       if (style.kind === "unloaded") {
         value.textContent = analysisMode === "frame" ? "0 / 0" : "0";
       } else if (style.kind === "bending") {
-        value.textContent = `0 / ${formatForce(Math.abs(style.moment))}`;
+        value.textContent = `0 / ${formatMoment(Math.abs(style.moment))}`;
       } else if (analysisMode === "frame") {
-        value.textContent = `${formatForce(style.value)} / ${formatForce(Math.abs(style.moment))}`;
+        value.textContent = `${formatForce(style.value)} / ${formatMoment(Math.abs(style.moment))}`;
       } else {
         value.textContent = formatForce(style.value);
       }
@@ -1832,7 +1877,7 @@
         id: node.id,
       })),
       forceUnit: "N",
-      momentUnit: "N·in",
+      momentUnit: "N·m",
       sticks: [...members].sort((a, b) => memberName(a).localeCompare(memberName(b))).map((member) => {
         const a = nodeById(member.i);
         const b = nodeById(member.j);
@@ -1844,7 +1889,7 @@
           to: b ? b.label : member.j,
           length: a && b ? roundNum(memberLength(a, b)) : null,
           force: force == null ? null : roundNum(force.axial * scale),
-          moment: force == null ? null : roundNum(force.moment * scale),
+          moment: force == null ? null : roundNum(physicalMoment(force.moment)),
           shear: force == null ? null : roundNum(force.shear * scale),
           id: member.id,
           i: member.i,
@@ -3106,8 +3151,8 @@
   function canvasForceLabel(style) {
     if (analysisMode === "frame") {
       if (style.kind === "unloaded") return "0 / 0";
-      if (style.kind === "bending") return `0 / ${formatForce(Math.abs(style.moment))}`;
-      return `${formatForce(style.value)} / ${formatForce(Math.abs(style.moment))}`;
+      if (style.kind === "bending") return `0 / ${formatMoment(Math.abs(style.moment))}`;
+      return `${formatForce(style.value)} / ${formatMoment(Math.abs(style.moment))}`;
     }
     if (style.kind === "unloaded") return "0";
     return formatForce(style.value);
