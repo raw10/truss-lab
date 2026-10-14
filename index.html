@@ -18,6 +18,8 @@
       --tan: #c6a36e;
       --load: #1c4f8a;
       --shadow: 0 1px 2px rgba(42, 36, 28, 0.06), 0 8px 24px rgba(42, 36, 28, 0.04);
+      /* 1 = label every member on the canvas; 0 = none (hover tooltip still works). */
+      --canvas-force-labels: 1;
     }
 
     * { box-sizing: border-box; }
@@ -426,6 +428,10 @@
     }
 
     @media (max-width: 800px) {
+      :root {
+        --canvas-force-labels: 0;
+      }
+
       html, body {
         height: auto;
         min-height: 100%;
@@ -3041,8 +3047,24 @@
     ctx.restore();
   }
 
+  function canvasForceLabelsEnabled() {
+    return getComputedStyle(document.documentElement)
+      .getPropertyValue("--canvas-force-labels")
+      .trim() === "1";
+  }
+
+  function canvasForceLabel(style) {
+    if (analysisMode === "frame") {
+      if (style.kind === "unloaded") return "0.00 / 0.00";
+      if (style.kind === "bending") return `0.00 / ${Math.abs(style.moment).toFixed(2)}`;
+      return `${style.value.toFixed(2)} / ${Math.abs(style.moment).toFixed(2)}`;
+    }
+    if (style.kind === "unloaded") return "0.00";
+    return style.value.toFixed(2);
+  }
+
   function drawForceLabels() {
-    if (!showForces()) return;
+    if (!showForces() || !canvasForceLabelsEnabled()) return;
     let cx = 0;
     let cy = 0;
     for (const node of nodes) {
@@ -3056,10 +3078,10 @@
     ctx.font = "600 12px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    const placed = [];
     for (const member of members) {
       const style = memberStyle(member);
       if (!style.text) continue;
+      const label = canvasForceLabel(style);
       const a = nodeById(member.i);
       const b = nodeById(member.j);
       const pa = worldToScreen(a.x, a.y);
@@ -3069,26 +3091,19 @@
       const dx = pb.x - pa.x;
       const dy = pb.y - pa.y;
       const len = Math.hypot(dx, dy) || 1;
-      const textWidth = ctx.measureText(style.text).width;
-      if (textWidth + 28 > len * 0.62) continue;
       let px = -dy / len;
       let py = dx / len;
       if (px * (mx - cx) + py * (my - cy) < 0) {
         px = -px;
         py = -py;
       }
-      const x = mx + px * 18;
-      const y = my + py * 18;
-      const box = { x: x - textWidth / 2 - 4, y: y - 9, w: textWidth + 8, h: 18 };
-      if (placed.some((other) =>
-        box.x < other.x + other.w && box.x + box.w > other.x && box.y < other.y + other.h && box.y + box.h > other.y
-      )) continue;
-      placed.push(box);
+      const x = mx + px * 16;
+      const y = my + py * 16;
       ctx.lineWidth = 4;
       ctx.strokeStyle = "rgba(255, 250, 243, 0.94)";
-      ctx.strokeText(style.text, x, y);
+      ctx.strokeText(label, x, y);
       ctx.fillStyle = color.ink;
-      ctx.fillText(style.text, x, y);
+      ctx.fillText(label, x, y);
     }
     ctx.restore();
   }
