@@ -26,12 +26,17 @@
 
     [hidden] { display: none !important; }
 
-    html, body { height: 100%; }
+    html, body {
+      height: auto;
+      min-height: 100%;
+    }
 
     body {
       margin: 0;
       display: flex;
       flex-direction: column;
+      overflow-x: hidden;
+      overflow-y: auto;
       background:
         linear-gradient(180deg, rgba(255, 250, 243, 0.7), rgba(255, 250, 243, 0) 120px),
         var(--bg);
@@ -232,17 +237,19 @@
     .status.warning { color: #8a3b22; }
 
     .workspace {
-      flex: 1;
-      min-height: 0;
+      flex: 0 0 auto;
       display: flex;
       gap: 12px;
       padding: 0 12px 12px;
+      height: min(68vh, 720px);
+      min-height: 320px;
     }
 
     .stage {
       flex: 1;
       min-width: 0;
-      min-height: 220px;
+      min-height: 0;
+      height: 100%;
       position: relative;
       background: var(--paper);
       border: 1px solid var(--line);
@@ -284,10 +291,11 @@
     }
 
     .results {
-      width: min(320px, 38vw);
+      width: min(340px, 40vw);
       max-width: 100%;
       flex: 0 0 auto;
       min-height: 0;
+      height: 100%;
       display: flex;
       flex-direction: column;
       gap: 12px;
@@ -298,7 +306,8 @@
       padding: 0;
     }
 
-    .results h2 {
+    .results h2,
+    .params-row h2 {
       margin: 0;
       font-size: 0.95rem;
       font-family: Georgia, "Iowan Old Style", Palatino, serif;
@@ -318,14 +327,20 @@
     }
 
     .results-block.forces {
-      flex: 0 0 auto;
-      overflow: visible;
+      flex: 1 1 auto;
+      overflow: auto;
     }
 
-    .results-block.params {
-      flex: 1 1 auto;
-      overflow: hidden;
-      min-height: 0;
+    .params-row {
+      flex: 0 0 auto;
+      width: auto;
+      margin: 0 12px 16px;
+    }
+
+    .params-row .results-block.params {
+      width: 100%;
+      max-width: 100%;
+      overflow: visible;
     }
 
     #force-list {
@@ -396,18 +411,11 @@
       font-size: 0.82rem;
     }
 
-    #force-columns {
-      margin: 0 0 2px;
-      color: var(--muted);
-      font-size: 0.75rem;
-      line-height: 1.35;
-    }
-
     #force-columns[hidden] { display: none !important; }
 
     .force-row {
       display: grid;
-      grid-template-columns: 0.7rem 2.2rem 1fr;
+      grid-template-columns: 0.7rem minmax(2.2rem, 2.6rem) minmax(4rem, 1fr);
       gap: 6px;
       align-items: center;
       padding: 4px 0;
@@ -416,7 +424,23 @@
       font-size: 0.86rem;
     }
 
-    .force-row .values {
+    .force-row.with-moment {
+      grid-template-columns: 0.7rem minmax(2.2rem, 2.6rem) minmax(3.4rem, 1fr) minmax(3.4rem, 1fr);
+    }
+
+    .force-row.force-head {
+      border-top: none;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 6px;
+      margin-bottom: 2px;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 650;
+      letter-spacing: 0.01em;
+    }
+
+    .force-row .axial,
+    .force-row .moment {
       text-align: right;
       font-variant-numeric: tabular-nums;
     }
@@ -432,20 +456,10 @@
         --canvas-force-labels: 0;
       }
 
-      html, body {
-        height: auto;
-        min-height: 100%;
-      }
-
-      body {
-        overflow-x: hidden;
-        overflow-y: auto;
-      }
-
       .workspace {
         flex-direction: column;
-        flex: 1 0 auto;
-        min-height: auto;
+        height: auto;
+        min-height: 0;
         width: 100%;
         max-width: 100%;
         overflow: visible;
@@ -462,17 +476,21 @@
       .results {
         width: 100%;
         max-width: 100%;
+        height: auto;
         flex: 0 0 auto;
         max-height: none;
         overflow: visible;
       }
 
-      .results-block.forces,
-      .results-block.params {
+      .results-block.forces {
         flex: 0 0 auto;
         width: 100%;
         max-width: 100%;
         overflow: visible;
+      }
+
+      .params-row {
+        margin: 0 12px 16px;
       }
 
       #force-list {
@@ -496,18 +514,23 @@
       header { padding: 12px 12px 0; }
       .toolbar { padding: 12px 12px 0; }
       .status { margin-left: 12px; margin-right: 12px; }
-      .workspace { padding: 0 12px 16px; }
+      .workspace { padding: 0 12px 12px; }
+      .params-row { margin: 0 12px 16px; }
       .field { flex: 1 1 8rem; max-width: 100%; }
       .entry { width: 100%; }
       input { width: 100%; max-width: 100%; }
       h1 { font-size: 1.25rem; }
       .force-row {
-        grid-template-columns: 0.7rem 2rem 1fr;
+        grid-template-columns: 0.7rem 2rem minmax(3rem, 1fr);
         font-size: 0.82rem;
+      }
+      .force-row.with-moment {
+        grid-template-columns: 0.7rem 2rem minmax(2.8rem, 1fr) minmax(2.8rem, 1fr);
       }
     }
 
     @media print {
+      .params-row,
       .results-block.params {
         display: none !important;
       }
@@ -528,6 +551,7 @@
 
       .workspace {
         display: block;
+        height: auto;
       }
 
       .stage {
@@ -620,7 +644,7 @@
       <p id="empty" class="empty">Add a stick from the supports, then rotate ends. Ends snap to the grid or stick crossings.</p>
       <div id="tooltip" class="tooltip" hidden></div>
     </div>
-    <aside class="results" aria-label="Analysis and bridge parameters">
+    <aside class="results" aria-label="Member forces">
       <section class="results-block forces" aria-labelledby="forces-heading">
         <h2 id="forces-heading">Member forces</h2>
         <p class="legend">
@@ -629,18 +653,21 @@
           <span><i class="swatch tan"></i> Unloaded</span>
         </p>
         <p id="force-blurb"></p>
-        <p id="force-columns" hidden></p>
+        <div id="force-columns" class="force-row force-head" hidden></div>
         <div id="force-list"></div>
       </section>
-      <section class="results-block params" aria-labelledby="params-heading">
-        <h2 id="params-heading">Bridge parameters</h2>
-        <div class="params-actions">
-          <button type="button" id="apply-params">Apply</button>
-          <button type="button" id="copy-params">Copy</button>
-        </div>
-        <textarea id="params" spellcheck="false" aria-label="Bridge parameters as editable text"></textarea>
-      </section>
     </aside>
+  </div>
+
+  <div class="params-row">
+    <section class="results-block params" aria-labelledby="params-heading">
+      <h2 id="params-heading">Bridge parameters</h2>
+      <div class="params-actions">
+        <button type="button" id="apply-params">Apply</button>
+        <button type="button" id="copy-params">Copy</button>
+      </div>
+      <textarea id="params" spellcheck="false" aria-label="Bridge parameters as editable text"></textarea>
+    </section>
   </div>
 
   <script>
@@ -1813,36 +1840,51 @@
     }
     const loaded = nodeById(loadId);
     const weightN = loadScale();
-    blurbEl.textContent = analysisMode === "frame"
+    const showMoment = analysisMode === "frame";
+    blurbEl.textContent = showMoment
       ? `Frame analysis · ${formatLoadKg()} (${formatForce(weightN)} N) at ${loaded ? loaded.label : "a joint"} · stick depth ${formatInches(stickDepth)}.`
       : `Truss analysis · ${formatLoadKg()} (${formatForce(weightN)} N) at ${loaded ? loaded.label : "a joint"}.`;
     columnsEl.hidden = false;
-    columnsEl.textContent = analysisMode === "frame"
-      ? "Numbers: tension (+) or compression (−) in N / bending moment in N·m."
-      : "Numbers: tension (+) or compression (−) in N.";
+    columnsEl.className = "force-row force-head" + (showMoment ? " with-moment" : "");
+    columnsEl.replaceChildren();
+    const headSwatch = document.createElement("span");
+    const headName = document.createElement("span");
+    headName.textContent = "Stick";
+    const headAxial = document.createElement("span");
+    headAxial.className = "axial";
+    headAxial.textContent = "Force (N)";
+    columnsEl.append(headSwatch, headName, headAxial);
+    if (showMoment) {
+      const headMoment = document.createElement("span");
+      headMoment.className = "moment";
+      headMoment.textContent = "Moment (N·m)";
+      columnsEl.append(headMoment);
+    }
     const rows = [...members].sort((a, b) => memberName(a).localeCompare(memberName(b)));
     for (const member of rows) {
       const style = memberStyle(member);
       const row = document.createElement("div");
-      row.className = "force-row";
+      row.className = "force-row" + (showMoment ? " with-moment" : "");
       const swatch = document.createElement("i");
       swatch.className = "swatch";
       swatch.style.background = style.color;
       swatch.title = style.kind;
       const name = document.createElement("span");
       name.textContent = memberName(member);
-      const value = document.createElement("span");
-      value.className = "values";
-      if (style.kind === "unloaded") {
-        value.textContent = analysisMode === "frame" ? "0 / 0" : "0";
-      } else if (style.kind === "bending") {
-        value.textContent = `0 / ${formatMoment(Math.abs(style.moment))}`;
-      } else if (analysisMode === "frame") {
-        value.textContent = `${formatForce(style.value)} / ${formatMoment(Math.abs(style.moment))}`;
-      } else {
-        value.textContent = formatForce(style.value);
+      const axial = document.createElement("span");
+      axial.className = "axial";
+      axial.textContent = style.kind === "unloaded" || style.kind === "bending"
+        ? "0"
+        : formatForce(style.value);
+      row.append(swatch, name, axial);
+      if (showMoment) {
+        const moment = document.createElement("span");
+        moment.className = "moment";
+        moment.textContent = style.kind === "unloaded"
+          ? "0"
+          : formatMoment(Math.abs(style.moment));
+        row.append(moment);
       }
-      row.append(swatch, name, value);
       listEl.append(row);
     }
   }
